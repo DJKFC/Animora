@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -43,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -76,11 +78,11 @@ fun Int.toCompose() = Color(this)
 
 /** Вертикальный ползунок (для размера/прозрачности кисти). */
 @Composable
-fun VerticalSlider(value: Float, onChange: (Float) -> Unit, label: String, modifier: Modifier = Modifier, color: Color = Pal.accent) {
+fun VerticalSlider(value: Float, onChange: (Float) -> Unit, label: String, modifier: Modifier = Modifier, color: Color = Pal.accent, barHeight: Dp = 150.dp) {
     val cb by rememberUpdatedState(onChange)
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
-            Modifier.width(30.dp).height(150.dp).clip(RoundedCornerShape(15.dp)).background(Pal.panel.copy(alpha = 0.92f))
+            Modifier.width(30.dp).height(barHeight.coerceAtLeast(36.dp)).clip(RoundedCornerShape(15.dp)).background(Pal.panel.copy(alpha = 0.92f))
                 .pointerInput(Unit) {
                     detectDragGestures(onDragStart = { o -> cb(1f - (o.y / size.height).coerceIn(0f, 1f)) }) { ch, _ ->
                         cb(1f - (ch.position.y / size.height).coerceIn(0f, 1f))
@@ -88,18 +90,20 @@ fun VerticalSlider(value: Float, onChange: (Float) -> Unit, label: String, modif
                 }
                 .pointerInput(Unit) { detectTapGestures { o -> cb(1f - (o.y / size.height).coerceIn(0f, 1f)) } }
         ) {
-            Canvas(Modifier.matchParentSizeCompat()) {
+            Canvas(Modifier.fillMaxSize()) {
                 val h = size.height * value.coerceIn(0f, 1f)
                 drawRoundRect(color.copy(alpha = 0.55f), topLeft = Offset(0f, size.height - h), size = Size(size.width, h),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.width / 2))
-                drawCircle(Color.White, radius = size.width * 0.32f, center = Offset(size.width / 2, (size.height - h).coerceIn(size.width / 2, size.height - size.width / 2)))
+                // безопасно при любой высоте полосы (на низких экранах она бывает уже ширины)
+                val r = size.width / 2
+                val cy = if (size.height > 2 * r) (size.height - h).coerceIn(r, size.height - r) else size.height / 2
+                drawCircle(Color.White, radius = minOf(size.width, size.height) * 0.32f, center = Offset(size.width / 2, cy))
             }
         }
         Text(label, fontSize = 10.sp, color = Pal.dim, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
-private fun Modifier.matchParentSizeCompat() = this.then(Modifier.fillMaxWidth().height(150.dp))
 
 @Composable
 fun ColorDot(color: Int, size: Int = 28, selected: Boolean = false, onClick: () -> Unit) {

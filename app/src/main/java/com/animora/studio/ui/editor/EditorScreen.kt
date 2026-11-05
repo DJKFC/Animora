@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -289,9 +290,13 @@ private fun ToolRail(ctl: EditorController, onColor: () -> Unit, onBrush: () -> 
 private fun BrushSliders(ctl: EditorController, modifier: Modifier) {
     val kind = if (ctl.tool == Tool.ERASER) BrushKind.ERASER else ctl.brushKind
     val b = ctl.settingsFor(kind)
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        VerticalSlider(sqrt((b.size - 1f) / 299f), { v -> ctl.updateBrush(kind) { it.copy(size = 1f + 299f * v * v) } }, "${b.size.toInt()}px")
-        VerticalSlider(b.opacity, { v -> ctl.updateBrush(kind) { it.copy(opacity = v.coerceAtLeast(0.02f)) } }, "${(b.opacity * 100).toInt()}%", color = Pal.accent2)
+    // высота ползунков подстраивается под свободное место (низкие экраны телефонов)
+    BoxWithConstraints(modifier.fillMaxHeight(), contentAlignment = Alignment.CenterStart) {
+        val bar = ((maxHeight - 100.dp) / 2).coerceIn(36.dp, 150.dp)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            VerticalSlider(sqrt(((b.size - 1f) / 299f).coerceIn(0f, 1f)), { v -> ctl.updateBrush(kind) { it.copy(size = 1f + 299f * v * v) } }, "${b.size.toInt()}px", barHeight = bar)
+            VerticalSlider(b.opacity, { v -> ctl.updateBrush(kind) { it.copy(opacity = v.coerceAtLeast(0.02f)) } }, "${(b.opacity * 100).toInt()}%", color = Pal.accent2, barHeight = bar)
+        }
     }
 }
 

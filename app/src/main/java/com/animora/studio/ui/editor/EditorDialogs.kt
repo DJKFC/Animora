@@ -178,8 +178,8 @@ fun PlaybackDialog(ctl: EditorController, onDismiss: () -> Unit) {
                 }
                 SwitchRow("Играть только диапазон", ctl.useRange) { ctl.useRange = it }
                 if (ctl.useRange) {
-                    LabeledSlider("Начало: ${ctl.rangeFrom + 1}", ctl.rangeFrom.toFloat(), 0f..(p.frameCount - 1).toFloat()) { ctl.rangeFrom = it.toInt().coerceAtMost(ctl.rangeTo) }
-                    LabeledSlider("Конец: ${ctl.rangeTo + 1}", ctl.rangeTo.toFloat(), 0f..(p.frameCount - 1).toFloat()) { ctl.rangeTo = it.toInt().coerceAtLeast(ctl.rangeFrom) }
+                    LabeledSlider("Начало: ${ctl.rangeFrom + 1}", ctl.rangeFrom.toFloat(), 0f..maxOf(1, p.frameCount - 1).toFloat()) { ctl.rangeFrom = it.toInt().coerceAtMost(ctl.rangeTo) }
+                    LabeledSlider("Конец: ${ctl.rangeTo + 1}", ctl.rangeTo.toFloat(), 0f..maxOf(1, p.frameCount - 1).toFloat()) { ctl.rangeTo = it.toInt().coerceAtLeast(ctl.rangeFrom) }
                     Row {
                         SmallBtn("Начало = текущий") { ctl.rangeFrom = ctl.frame.coerceAtMost(ctl.rangeTo) }
                         SmallBtn("Конец = текущий") { ctl.rangeTo = ctl.frame.coerceAtLeast(ctl.rangeFrom) }
