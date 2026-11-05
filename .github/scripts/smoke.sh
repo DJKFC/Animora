@@ -32,7 +32,9 @@ crashcheck() {
   else echo "OK: $1"; fi
 }
 screen_texts() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb shell cat /sdcard/ui.xml | grep -o 'text="[^"]\+"' | head -12 | tr '\n' ' '; echo; }
-scroll_down() { for i in 1 2 3 4 5 6; do adb shell input swipe 300 1500 300 300 150; sleep 0.5; done; }
+read W H < <(adb shell wm size | grep -o '[0-9]*x[0-9]*' | tail -1 | tr 'x' ' ')
+echo "SCREEN SIZE $W x $H"
+scroll_down() { for i in 1 2 3 4 5 6; do adb shell input swipe $((W/2)) $((H*8/10)) $((W/2)) $((H*2/10)) 150; sleep 0.5; done; }
 shot 1_home
 run_case() { # $1 имя, $2 шаблон, $3 пресет
   tap "Новый проект"; sleep 4
@@ -40,7 +42,7 @@ run_case() { # $1 имя, $2 шаблон, $3 пресет
   if [ -n "$2" ]; then scroll_down; tap "$2"; fi
   sleep 1; tap "Создать"; sleep 12; shot "case_$1"
   echo "SCREEN[$1]: $(screen_texts)"
-  adb shell input swipe 600 900 800 1100 400; sleep 3
+  adb shell input swipe $((W/2)) $((H/2)) $((W*6/10)) $((H*6/10)) 400; sleep 3
   crashcheck "$1"
   adb shell input keyevent 4; sleep 5
   crashcheck "$1_back"
