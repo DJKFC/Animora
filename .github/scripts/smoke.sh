@@ -53,6 +53,13 @@ run_case tween "Анимация движения" ""
 run_case empty "Пустой" ""
 run_case k4 "" "4K UHD"
 run_case reels "" "Reels / TikTok / Shorts"
+# длинный проект (30 минут) и прокрутка таймлайна
+tap "Новый проект"; sleep 4; tap "30 мин"; sleep 1; tap "Создать"; sleep 12; shot long_project
+echo "SCREEN[long]: $(screen_texts)"
+for i in 1 2 3 4 5; do adb shell input swipe $((W*8/10)) $((H*93/100)) $((W*2/10)) $((H*93/100)) 120; sleep 0.5; done; shot long_scrolled
+crashcheck long
+adb shell input keyevent 4; sleep 5
+crashcheck long_back
 # новые окна: настройка интерфейса и редактор кривых (на шаблоне с твином)
 tap "Новый проект"; sleep 4; scroll_down; tap "Анимация движения"; sleep 1; tap "Создать"; sleep 10
 tap "Ещё"; sleep 2; tap "Настроить интерфейс…"; sleep 3; shot ui_dialog
