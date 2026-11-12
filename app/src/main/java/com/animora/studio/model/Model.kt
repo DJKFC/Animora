@@ -175,6 +175,13 @@ data class Transform(
     val isIdentity: Boolean get() = tx == 0f && ty == 0f && rot == 0f && sx == 1f && sy == 1f && alpha == 1f
 
     companion object {
+        /** Интерполяция с отдельным прогрессом для позиции, поворота, масштаба и прозрачности. */
+        fun lerpProps(a: Transform, b: Transform, tp: Float, tr: Float, ts: Float, ta: Float) = Transform(
+            lerp(a.tx, b.tx, tp), lerp(a.ty, b.ty, tp), lerp(a.rot, b.rot, tr),
+            lerp(a.sx, b.sx, ts), lerp(a.sy, b.sy, ts), lerp(a.alpha, b.alpha, ta).coerceIn(0f, 1f),
+            lerp(a.px, b.px, tp), lerp(a.py, b.py, tp)
+        )
+
         fun lerp(a: Transform, b: Transform, t: Float) = Transform(
             lerp(a.tx, b.tx, t), lerp(a.ty, b.ty, t), lerp(a.rot, b.rot, t),
             lerp(a.sx, b.sx, t), lerp(a.sy, b.sy, t), lerp(a.alpha, b.alpha, t).coerceIn(0f, 1f),
@@ -188,9 +195,24 @@ class Keyframe(
     var tween: TweenType = TweenType.NONE,
     var easing: Easing = Easing.LINEAR,
     var transform: Transform = Transform(),
-    var label: String = ""
+    var label: String = "",
+    /** Своя кривая сглаживания (если задана — заменяет пресет easing). */
+    var curve: EaseCurve? = null,
+    /** Отдельные кривые для свойств (как в редакторе движения Animate). */
+    var separateCurves: Boolean = false,
+    val propCurves: HashMap<CurveProp, EaseCurve> = HashMap()
 ) {
-    fun copy() = Keyframe(elements.toMutableList(), tween, easing, transform, label)
+    fun copy() = Keyframe(elements.toMutableList(), tween, easing, transform, label, curve, separateCurves, HashMap(propCurves))
+
+    /** Прогресс свойства prop при линейном прогрессе raw (0..1) с учётом кривых. */
+    fun ease(prop: CurveProp, raw: Float): Float =
+        (if (separateCurves) propCurves[prop] else null)?.eval(raw) ?: curve?.eval(raw) ?: easing.apply(raw)
+
+    /** Кривая, которая сейчас действует для свойства (для редактора). */
+    fun curveFor(prop: CurveProp?): EaseCurve =
+        (if (prop != null && separateCurves) propCurves[prop] else null) ?: curve ?: EaseCurve.fromEasing(easing)
+
+    val hasCustomCurve: Boolean get() = curve != null || (separateCurves && propCurves.isNotEmpty())
     val isEmpty: Boolean get() = elements.isEmpty()
 }
 
@@ -208,8 +230,9 @@ data class Bone(
 }
 
 /** Поза: для каждой кости [поворот°, dx, dy] относительно позы покоя. */
-class Pose(val values: HashMap<String, FloatArray> = HashMap(), var easing: Easing = Easing.EASE_IN_OUT) {
-    fun copy() = Pose(HashMap(values.mapValues { it.value.copyOf() }), easing)
+class Pose(val values: HashMap<String, FloatArray> = HashMap(), var easing: Easing = Easing.EASE_IN_OUT, var curve: EaseCurve? = null) {
+    fun copy() = Pose(HashMap(values.mapValues { it.value.copyOf() }), easing, curve)
+    fun ease(raw: Float): Float = curve?.eval(raw) ?: easing.apply(raw)
 }
 
 class Layer(

@@ -52,21 +52,23 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.animora.studio.model.Easing
 import com.animora.studio.model.LayerType
 import com.animora.studio.model.TweenType
 import com.animora.studio.ui.Pal
+import com.animora.studio.ui.UiPrefs
 import kotlin.math.max
 import kotlin.math.min
 
-private val CELL_W = 22.dp
+private val CELL_W: Dp get() = UiPrefs.timelineCell.dp
 private val ROW_H = 28.dp
 private val HEAD_H = 22.dp
 
 @Composable
-fun Timeline(ctl: EditorController, onMore: () -> Unit) {
+fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
     ctl.version
     val p = ctl.project
     val layers = p.layers.reversed()
@@ -83,8 +85,8 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit) {
     }
 
     Column(Modifier.fillMaxWidth().background(Pal.panel)) {
-        TimelineControls(ctl, onMore)
-        val visibleRows = min(max(rows, 1), 5)
+        TimelineControls(ctl, onMore, onCurves)
+        val visibleRows = min(max(rows, 1), UiPrefs.timelineRows)
         Row(Modifier.fillMaxWidth().height(HEAD_H + ROW_H * visibleRows)) {
             Column(Modifier.width(118.dp).fillMaxHeight()) {
                 Box(Modifier.height(HEAD_H).fillMaxWidth().background(Pal.panel2), contentAlignment = Alignment.CenterStart) {
@@ -217,6 +219,16 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, scrollX: Int, vie
                         else -> Color(l.color).copy(alpha = 0.22f)
                     }
                     drawRect(span, Offset(x0 + 1, y + 4), Size(max(0f, x1 - x0 - 2), rowPx - 8))
+                    if (kf.tween != TweenType.NONE && hasNext && kf.hasCustomCurve && x1 - x0 > cellPx * 3) {
+                        // значок своей кривой в середине пролёта
+                        val mx = (x0 + x1) / 2; val w = cellPx * 0.9f
+                        val wave = Path().apply {
+                            moveTo(mx - w, cy + 5f)
+                            cubicTo(mx - w / 2, cy + 5f, mx - w / 3, cy - 7f, mx, cy - 7f)
+                            cubicTo(mx + w / 3, cy - 7f, mx + w / 2, cy + 5f, mx + w, cy + 5f)
+                        }
+                        drawPath(wave, Pal.accent2, style = Stroke(2f))
+                    }
                     if (kf.tween != TweenType.NONE && hasNext) {
                         val col = if (kf.tween == TweenType.MOTION) Pal.motion else Pal.shape
                         drawLine(col, Offset(x0 + cellPx, cy), Offset(x1 - 5, cy), 2f)
@@ -248,7 +260,7 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, scrollX: Int, vie
 }
 
 @Composable
-private fun TimelineControls(ctl: EditorController, onMore: () -> Unit) {
+private fun TimelineControls(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
     ctl.version
     var easeMenu by remember { mutableStateOf(false) }
     val layer = ctl.activeLayer
@@ -276,8 +288,10 @@ private fun TimelineControls(ctl: EditorController, onMore: () -> Unit) {
         }
         Box {
             val curEase = if (layer?.type == LayerType.BONES) layer.poses.floorEntry(ctl.frame)?.value?.easing else held?.second?.easing
-            SmallBtn("Сглаж.: ${curEase?.title ?: "—"}") { easeMenu = true }
+            val custom = if (layer?.type == LayerType.BONES) layer.poses.floorEntry(ctl.frame)?.value?.curve != null else held?.second?.hasCustomCurve == true
+            SmallBtn("Сглаж.: ${if (custom) "своя кривая" else curEase?.title ?: "—"}") { easeMenu = true }
             DropdownMenu(expanded = easeMenu, onDismissRequest = { easeMenu = false }) {
+                DropdownMenuItem(text = { Text("Своя кривая… (редактор)") }, onClick = { easeMenu = false; onCurves() })
                 Easing.entries.forEach { e ->
                     DropdownMenuItem(text = { Text(e.title) }, onClick = { ctl.setEasing(e); easeMenu = false }, leadingIcon = {
                         Canvas(Modifier.size(28.dp, 20.dp)) {
@@ -294,6 +308,7 @@ private fun TimelineControls(ctl: EditorController, onMore: () -> Unit) {
                 }
             }
         }
+        SmallBtn("〰 Кривая", onClick = onCurves)
         IconBtn(Icons.Filled.MoreHoriz, "Ещё", onClick = onMore)
     }
 }

@@ -34,6 +34,8 @@ import com.animora.studio.model.Bone
 import com.animora.studio.model.BrushLibrary
 import com.animora.studio.model.BrushRegistry
 import com.animora.studio.model.CustomBrush
+import com.animora.studio.model.CurveProp
+import com.animora.studio.model.EaseCurve
 import com.animora.studio.model.BrushKind
 import com.animora.studio.model.Easing
 import com.animora.studio.model.Element
@@ -252,7 +254,7 @@ class EditorController(
         "$version|$frame|$onionEnabled|$onionPrev|$onionNext|$onionOpacity|$onionAllLayers|$onionKeysOnly|$onionTint|$activeLayerId|$playing"
 
     fun overlayKey(): String =
-        "${selection?.indices?.size}|$selectedBoneId|$showGrid|$showSafeArea|$showBones|$flipView|$viewResetToken|$tool|$symmetry|$color"
+        "${selection?.indices?.size}|$selectedBoneId|${com.animora.studio.ui.UiPrefs.workspace}|$showGrid|$showSafeArea|$showBones|$flipView|$viewResetToken|$tool|$symmetry|$color"
 
     // ---------------- история ----------------
     fun checkpoint() = history.checkpoint()
@@ -321,7 +323,7 @@ class EditorController(
         if (held != null && held.value.tween == TweenType.SHAPE) {
             val next = l.keyframes.higherEntry(held.key)
             if (next != null) {
-                val t = held.value.easing.apply((frame - held.key).toFloat() / (next.key - held.key))
+                val t = held.value.ease(com.animora.studio.model.CurveProp.SHAPE, (frame - held.key).toFloat() / (next.key - held.key))
                 k.elements.clear(); k.elements.addAll(Interp.morphElements(held.value.elements, next.value.elements, t))
             }
         }
@@ -446,10 +448,101 @@ class EditorController(
         val l = activeLayer ?: return
         if (l.type == LayerType.BONES) {
             val p = l.poses.floorEntry(frame)?.value ?: return
-            checkpoint(); p.easing = e; changed(); return
+            checkpoint(); p.easing = e; p.curve = null; changed(); return
         }
         val (_, k) = heldKey(l) ?: return
-        checkpoint(); k.easing = e; changed()
+        checkpoint(); k.easing = e
+        if (k.hasCustomCurve) { k.curve = null; k.propCurves.clear(); k.separateCurves = false; toast("Своя кривая заменена пресетом «${e.title}»") }
+        changed()
+    }
+
+    // ---------------- кривые анимации ----------------
+    private var curveClipboard: EaseCurve? = null
+
+    /** Ключ (или ключ позы), чьей кривой управляет редактор кривых, и границы его твина. */
+    class CurveTarget(val layer: Layer, val start: Int, val end: Int?, val key: Keyframe?, val pose: Pose?)
+
+    fun curveTarget(): CurveTarget? {
+        val l = activeLayer ?: return null
+        return if (l.type == LayerType.BONES) {
+            val e = l.poses.floorEntry(frame) ?: return null
+            CurveTarget(l, e.key, l.poses.higherKey(e.key), null, e.value)
+        } else {
+            val e = l.keyframes.floorEntry(frame) ?: return null
+            CurveTarget(l, e.key, l.keyframes.higherKey(e.key), e.value, null)
+        }
+    }
+
+    fun currentCurve(prop: CurveProp?): EaseCurve? {
+        val t = curveTarget() ?: return null
+        return t.key?.curveFor(prop) ?: t.pose?.let { it.curve ?: EaseCurve.fromEasing(it.easing) }
+    }
+
+    /** prop == null — общая кривая для всех свойств. */
+    fun setCurve(prop: CurveProp?, c: EaseCurve, tag: String = "curve") {
+        val t = curveTarget() ?: return
+        checkpointOnce(tag)
+        t.pose?.let { it.curve = c }
+        t.key?.let { k ->
+            if (prop != null && k.separateCurves) k.propCurves[prop] = c else k.curve = c
+            if (k.tween == TweenType.NONE && t.end != null) k.tween = TweenType.MOTION
+        }
+        changed()
+    }
+
+    fun setSeparateCurves(on: Boolean) {
+        val k = curveTarget()?.key ?: return
+        checkpoint()
+        k.separateCurves = on
+        if (on) {
+            val base = k.curve ?: EaseCurve.fromEasing(k.easing)
+            CurveProp.entries.forEach { if (!k.propCurves.containsKey(it)) k.propCurves[it] = base }
+        }
+        changed()
+    }
+
+    fun resetCurve() {
+        val t = curveTarget() ?: return
+        checkpoint()
+        t.pose?.let { it.curve = null }
+        t.key?.let { it.curve = null; it.propCurves.clear(); it.separateCurves = false }
+        changed()
+    }
+
+    fun copyCurve(prop: CurveProp?) { curveClipboard = currentCurve(prop); toast("Кривая скопирована") }
+    fun pasteCurve(prop: CurveProp?) {
+        val c = curveClipboard ?: run { toast("Буфер кривой пуст"); return }
+        setCurve(prop, c, "paste${System.nanoTime()}")
+    }
+
+    /** Применить кривые текущего ключа ко всем ключам слоя. */
+    fun applyCurveToLayer() {
+        val t = curveTarget() ?: return
+        checkpoint()
+        t.key?.let { src ->
+            t.layer.keyframes.values.forEach { k ->
+                if (k === src) return@forEach
+                k.curve = src.curve; k.separateCurves = src.separateCurves
+                k.propCurves.clear(); k.propCurves.putAll(src.propCurves); k.easing = src.easing
+            }
+        }
+        t.pose?.let { src -> t.layer.poses.values.forEach { it.curve = src.curve; it.easing = src.easing } }
+        changed(); toast("Кривая применена ко всем ключам слоя")
+    }
+
+    /** Траектория центра слоя по кадрам текущего твина (для отображения на холсте). */
+    fun motionPath(): List<PointF> {
+        val l = activeLayer ?: return emptyList()
+        if (l.type != LayerType.DRAWING) return emptyList()
+        val e = l.keyframes.floorEntry(frame) ?: return emptyList()
+        val end = l.keyframes.higherKey(e.key) ?: return emptyList()
+        if (e.value.tween == TweenType.NONE) return emptyList()
+        return (e.key..end).map { f ->
+            val tr = Renderer.keyTransformAt(l, f) ?: Transform()
+            val p = floatArrayOf(tr.px + tr.tx, tr.py + tr.ty)
+            Bones.bindMatrix(project, l, f)?.mapPoints(p)
+            PointF(p[0], p[1])
+        }
     }
 
     /** Новое: «запечь» твин в реальные промежуточные кадры для ручной доработки. */
@@ -462,7 +555,7 @@ class EditorController(
         for (f in a + 1 until b) {
             val tr = Renderer.keyTransformAt(l, f) ?: Transform()
             val els = if (k.tween == TweenType.SHAPE) {
-                val t = k.easing.apply((f - a).toFloat() / (b - a))
+                val t = k.ease(com.animora.studio.model.CurveProp.SHAPE, (f - a).toFloat() / (b - a))
                 Interp.morphElements(k.elements, l.keyframes[b]!!.elements, t)
             } else k.elements
             val m = tr.matrix()

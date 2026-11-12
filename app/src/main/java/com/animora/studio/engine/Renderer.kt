@@ -14,6 +14,8 @@ import com.animora.studio.model.BgType
 import com.animora.studio.model.BitmapElement
 import com.animora.studio.model.BrushKind
 import com.animora.studio.model.BrushRegistry
+import com.animora.studio.model.CurveProp
+import com.animora.studio.model.Keyframe
 import com.animora.studio.model.CustomBrush
 import com.animora.studio.model.Element
 import com.animora.studio.model.Layer
@@ -76,11 +78,17 @@ class Renderer {
             val k = e.value
             val next = layer.keyframes.higherEntry(e.key)
             if (next != null && k.tween != TweenType.NONE && frame > e.key) {
-                val t = k.easing.apply((frame - e.key).toFloat() / (next.key - e.key))
-                return Transform.lerp(k.transform, next.value.transform, t)
+                return tweenTransform(k, next.value, (frame - e.key).toFloat() / (next.key - e.key))
             }
             return k.transform
         }
+
+        /** Трансформация твина с учётом кривых по свойствам. */
+        fun tweenTransform(k: Keyframe, next: Keyframe, raw: Float): Transform = Transform.lerpProps(
+            k.transform, next.transform,
+            k.ease(CurveProp.POSITION, raw), k.ease(CurveProp.ROTATION, raw),
+            k.ease(CurveProp.SCALE, raw), k.ease(CurveProp.ALPHA, raw)
+        )
 
         /** Матрица отображения слоя в кадре: локальные координаты → документ. */
         fun layerMatrix(project: Project, layer: Layer, frame: Int): Matrix {
@@ -96,9 +104,9 @@ class Renderer {
             var elements: List<Element> = k.elements
             var tr = k.transform
             if (next != null && k.tween != TweenType.NONE && frame > e.key) {
-                val t = k.easing.apply((frame - e.key).toFloat() / (next.key - e.key))
-                tr = Transform.lerp(k.transform, next.value.transform, t)
-                if (k.tween == TweenType.SHAPE) elements = Interp.morphElements(k.elements, next.value.elements, t)
+                val raw = (frame - e.key).toFloat() / (next.key - e.key)
+                tr = tweenTransform(k, next.value, raw)
+                if (k.tween == TweenType.SHAPE) elements = Interp.morphElements(k.elements, next.value.elements, k.ease(CurveProp.SHAPE, raw))
             }
             val m = tr.matrix()
             Bones.bindMatrix(project, layer, frame)?.let { m.postConcat(it) }

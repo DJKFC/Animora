@@ -143,7 +143,7 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
     override fun onDraw(canvas: Canvas) {
         if (ctl.viewResetToken != appliedReset) { appliedReset = ctl.viewResetToken; fit() }
         if (ctl.flipView != appliedFlip) { view.postScale(-1f, 1f, width / 2f, height / 2f); appliedFlip = ctl.flipView }
-        canvas.drawColor(0xFF24222E.toInt())
+        canvas.drawColor(com.animora.studio.ui.UiPrefs.workspace)
         ensureCache()
         val vs = viewScale
         canvas.save()
@@ -267,8 +267,28 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
             canvas.drawRect(x - hs / 2, y - hs / 2, x + hs / 2, y + hs / 2, overlay)
         }
         canvas.drawCircle(b.centerX(), b.top - rotOffset(), hs * 0.7f, overlay)
+        if (ctl.tool == Tool.TRANSFORM) drawMotionPath(canvas, vs)
         if (ctl.tool == Tool.TRANSFORM) ctl.keyPivotDoc()?.let {
             overlay.color = 0xFFFF4081.toInt(); canvas.drawCircle(it.x, it.y, 5f / vs, overlay)
+        }
+    }
+
+    /** Траектория твина движения: точка на каждый кадр — видно расстановку и ускорение (как «тайминг-чарт»). */
+    private fun drawMotionPath(canvas: Canvas, vs: Float) {
+        val path = ctl.motionPath()
+        if (path.size < 2) return
+        overlay.reset(); overlay.isAntiAlias = true; overlay.style = Paint.Style.STROKE
+        overlay.strokeWidth = 1.5f / vs; overlay.color = 0x90FFC857.toInt()
+        overlay.pathEffect = DashPathEffect(floatArrayOf(6f / vs, 5f / vs), 0f)
+        val p = Path(); p.moveTo(path[0].x, path[0].y)
+        for (i in 1 until path.size) p.lineTo(path[i].x, path[i].y)
+        canvas.drawPath(p, overlay)
+        overlay.pathEffect = null; overlay.style = Paint.Style.FILL
+        val start = ctl.curveTarget()?.start ?: 0
+        path.forEachIndexed { i, pt ->
+            val cur = start + i == ctl.frame
+            overlay.color = if (cur) 0xFFFF6B9A.toInt() else 0xFFFFC857.toInt()
+            canvas.drawCircle(pt.x, pt.y, (if (cur) 5.5f else 3.2f) / vs, overlay)
         }
     }
 

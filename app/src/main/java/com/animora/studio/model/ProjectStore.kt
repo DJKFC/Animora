@@ -128,6 +128,9 @@ object Serializer {
             l.keyframes.forEach { (f, k) ->
                 put(JSONObject().apply {
                     put("f", f); put("tween", k.tween.name); put("easing", k.easing.name); put("label", k.label)
+                    k.curve?.let { put("curve", it.toJson()) }
+                    if (k.separateCurves) put("sepCurves", true)
+                    if (k.propCurves.isNotEmpty()) put("propCurves", JSONObject().apply { k.propCurves.forEach { (pr, c) -> put(pr.name, c.toJson()) } })
                     val t = k.transform
                     put("tr", JSONArray().apply { listOf(t.tx, t.ty, t.rot, t.sx, t.sy, t.alpha, t.px, t.py).forEach { put(it.toDouble()) } })
                     put("el", JSONArray().apply {
@@ -160,7 +163,7 @@ object Serializer {
         put("poses", JSONArray().apply {
             l.poses.forEach { (f, pose) ->
                 put(JSONObject().apply {
-                    put("f", f); put("e", pose.easing.name)
+                    put("f", f); put("e", pose.easing.name); pose.curve?.let { put("curve", it.toJson()) }
                     put("d", JSONObject().apply {
                         pose.values.forEach { (id, v) -> put(id, JSONArray().apply { v.forEach { x -> put(x.toDouble()) } }) }
                     })
@@ -210,8 +213,17 @@ object Serializer {
                 tween = runCatching { TweenType.valueOf(k.getString("tween")) }.getOrDefault(TweenType.NONE),
                 easing = runCatching { Easing.valueOf(k.getString("easing")) }.getOrDefault(Easing.LINEAR),
                 transform = Transform(t(0), t(1), t(2), t(3), t(4), t(5), t(6), t(7)),
-                label = k.optString("label", "")
+                label = k.optString("label", ""),
+                curve = k.optJSONArray("curve")?.let { EaseCurve.fromJson(it) },
+                separateCurves = k.optBoolean("sepCurves", false)
             )
+            k.optJSONObject("propCurves")?.let { pc ->
+                pc.keys().forEach { name ->
+                    val prop = runCatching { CurveProp.valueOf(name) }.getOrNull()
+                    val c = pc.optJSONArray(name)?.let { EaseCurve.fromJson(it) }
+                    if (prop != null && c != null) kf.propCurves[prop] = c
+                }
+            }
             val els = k.getJSONArray("el")
             for (j in 0 until els.length()) {
                 val e = els.getJSONObject(j)
@@ -248,7 +260,10 @@ object Serializer {
         val poses = o.optJSONArray("poses") ?: JSONArray()
         for (i in 0 until poses.length()) {
             val po = poses.getJSONObject(i)
-            val pose = Pose(easing = runCatching { Easing.valueOf(po.getString("e")) }.getOrDefault(Easing.EASE_IN_OUT))
+            val pose = Pose(
+                easing = runCatching { Easing.valueOf(po.getString("e")) }.getOrDefault(Easing.EASE_IN_OUT),
+                curve = po.optJSONArray("curve")?.let { EaseCurve.fromJson(it) }
+            )
             val d = po.getJSONObject("d")
             d.keys().forEach { id ->
                 val a = d.getJSONArray(id)

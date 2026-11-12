@@ -53,7 +53,8 @@ object Pal {
     val panel = Color(0xFF1E1B2E)
     val panel2 = Color(0xFF29253D)
     val line = Color(0xFF3A3552)
-    val accent = Color(0xFF8B7CFF)
+    /** Цвет акцента настраивается в «Настройке интерфейса». */
+    var accent by mutableStateOf(Color(0xFF8B7CFF))
     val accent2 = Color(0xFFFFC857)
     val pink = Color(0xFFFF6B9A)
     val text = Color(0xFFECEAF6)

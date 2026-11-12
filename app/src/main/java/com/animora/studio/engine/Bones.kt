@@ -21,7 +21,7 @@ object Bones {
         val a = layer.poses.floorEntry(frame) ?: return layer.poses.firstEntry()?.value?.values
         val b = layer.poses.higherEntry(a.key) ?: return a.value.values
         if (frame <= a.key) return a.value.values
-        val t = a.value.easing.apply((frame - a.key).toFloat() / (b.key - a.key))
+        val t = a.value.ease((frame - a.key).toFloat() / (b.key - a.key))
         val out = HashMap<String, FloatArray>()
         val keys = a.value.values.keys + b.value.values.keys
         for (k in keys) {

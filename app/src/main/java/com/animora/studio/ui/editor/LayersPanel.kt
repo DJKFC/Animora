@@ -62,7 +62,7 @@ import com.animora.studio.ui.SectionTitle
 fun LayersPanel(ctl: EditorController, onImport: () -> Unit) {
     ctl.version
     val p = ctl.project
-    Column(Modifier.width(240.dp).fillMaxHeight().background(Pal.panel).padding(6.dp)) {
+    Column(Modifier.width(com.animora.studio.ui.UiPrefs.layersWidth.dp).fillMaxHeight().background(Pal.panel).padding(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Слои", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).padding(start = 4.dp))
             IconBtn(Icons.Filled.Add, "Слой рисования") { ctl.addLayer(LayerType.DRAWING) }

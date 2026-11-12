@@ -15,7 +15,7 @@ tap() {
 import os, re
 s = open('out/ui.xml', encoding='utf-8', errors='ignore').read()
 t = re.escape(os.environ['TXT'])
-m = re.search(r'text="' + t + r'"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', s)
+m = re.search(r'(?:text|content-desc)="' + t + r'"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', s)
 print(f"{(int(m[1])+int(m[3]))//2} {(int(m[2])+int(m[4]))//2}" if m else "")
 PY
 )
@@ -53,5 +53,19 @@ run_case tween "Анимация движения" ""
 run_case empty "Пустой" ""
 run_case k4 "" "4K UHD"
 run_case reels "" "Reels / TikTok / Shorts"
+# новые окна: настройка интерфейса и редактор кривых (на шаблоне с твином)
+tap "Новый проект"; sleep 4; scroll_down; tap "Анимация движения"; sleep 1; tap "Создать"; sleep 10
+tap "Ещё"; sleep 2; tap "Настроить интерфейс…"; sleep 3; shot ui_dialog
+tap "Для левши"; sleep 2; tap "Крупные кнопки"; sleep 2; shot ui_big
+tap "Закрыть"; sleep 3; shot ui_after
+crashcheck ui_settings
+tap "Ещё"; sleep 2; tap "Кривые анимации…"; sleep 3; shot curves
+tap "Отскок"; sleep 2; tap "Отдельные кривые для свойств"; sleep 2; tap "Поворот"; sleep 1; tap "Замах (антиципация)"; sleep 2
+adb shell input swipe $((W/2)) $((H*4/10)) $((W*6/10)) $((H*3/10)) 300; sleep 2; shot curves_edit
+tap "Закрыть"; sleep 2
+adb shell input keyevent 4; sleep 2
+crashcheck curves
+tap "Ещё"; sleep 2; tap "Настроить интерфейс…"; sleep 3; tap "Стандарт"; sleep 2; tap "Закрыть"; sleep 2
+crashcheck ui_reset
 adb logcat -d > out/logcat.txt
 exit 0

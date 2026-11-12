@@ -45,6 +45,8 @@ import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FlipToBack
 import androidx.compose.material.icons.filled.FlipToFront
 import androidx.compose.material.icons.filled.FormatColorFill
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Gesture
 import androidx.compose.material.icons.filled.HorizontalRule
 import androidx.compose.material.icons.filled.IosShare
@@ -94,11 +96,13 @@ import com.animora.studio.model.ProjectStore
 import com.animora.studio.ui.ColorDot
 import com.animora.studio.ui.ColorPickerDialog
 import com.animora.studio.ui.Pal
+import com.animora.studio.ui.TopButton
+import com.animora.studio.ui.UiPrefs
 import com.animora.studio.ui.VerticalSlider
 import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
-enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK }
+enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES }
 
 @Composable
 fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
@@ -116,28 +120,57 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
     BackHandler { exit() }
 
     var dialog by remember { mutableStateOf<Dlg?>(null) }
-    var showLayers by remember { mutableStateOf(true) }
+    var showLayers by remember { mutableStateOf(UiPrefs.layersOpenByDefault) }
+    var focus by remember { mutableStateOf(false) }
     val msg = ctl.message
     LaunchedEffect(msg) { if (msg != null) { delay(2600); if (ctl.message == msg) ctl.message = null } }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { ctl.importImage(it) } }
     val brushPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> ctl.importBrushes(uris) }
     val importBrushes = { brushPicker.launch(arrayOf("*/*")) }
 
+    val timeline: @Composable () -> Unit = { Timeline(ctl, onMore = { dialog = Dlg.FRAME_MENU }, onCurves = { dialog = Dlg.CURVES }) }
+    val layers: @Composable () -> Unit = { LayersPanel(ctl, onImport = { picker.launch("image/*") }) }
+    val tools: @Composable () -> Unit = { ToolRail(ctl, onColor = { dialog = Dlg.COLOR }, onBrush = { dialog = Dlg.BRUSH }) }
+
     Column(Modifier.fillMaxSize().background(Pal.bg).systemBarsPadding()) {
-        EditorTopBar(ctl, onBack = exit, onDialog = { dialog = it }, showLayers = showLayers, onToggleLayers = { showLayers = !showLayers })
+        if (!focus) EditorTopBar(
+            ctl, onBack = exit, onDialog = { dialog = it }, showLayers = showLayers,
+            onToggleLayers = { showLayers = !showLayers }, onFocus = { focus = true }
+        )
+        if (!focus && UiPrefs.timelineTop) timeline()
         Row(Modifier.weight(1f)) {
-            ToolRail(ctl, onColor = { dialog = Dlg.COLOR }, onBrush = { dialog = Dlg.BRUSH })
+            if (!focus && showLayers && UiPrefs.layersLeft) layers()
+            if (!focus && !UiPrefs.toolsRight) tools()
             Box(Modifier.weight(1f).fillMaxHeight().clipToBounds()) {
                 AndroidView(
                     factory = { DrawingView(it, ctl) },
                     modifier = Modifier.fillMaxSize(),
                     update = { v -> ctl.renderKey(); ctl.overlayKey(); v.sync() }
                 )
-                if (ctl.tool in setOf(Tool.BRUSH, Tool.ERASER, Tool.LINE, Tool.RECT, Tool.ELLIPSE)) {
-                    BrushSliders(ctl, Modifier.align(Alignment.CenterStart).padding(start = 8.dp))
+                if (UiPrefs.showSliders && ctl.tool in setOf(Tool.BRUSH, Tool.ERASER, Tool.LINE, Tool.RECT, Tool.ELLIPSE)) {
+                    BrushSliders(
+                        ctl,
+                        if (UiPrefs.slidersRight) Modifier.align(Alignment.CenterEnd).padding(end = 8.dp) else Modifier.align(Alignment.CenterStart).padding(start = 8.dp)
+                    )
                 }
-                ContextBar(ctl, Modifier.align(Alignment.TopCenter).padding(6.dp), onImportBrushes = importBrushes, onBrushDialog = { dialog = Dlg.BRUSH })
-                Column(Modifier.align(Alignment.BottomCenter).padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (!focus) ContextBar(
+                    ctl, Modifier.align(if (UiPrefs.contextBarBottom) Alignment.BottomCenter else Alignment.TopCenter).padding(6.dp),
+                    onImportBrushes = importBrushes, onBrushDialog = { dialog = Dlg.BRUSH }
+                )
+                if (focus) Surface(
+                    shape = RoundedCornerShape(20.dp), color = Pal.panel.copy(alpha = 0.85f),
+                    modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconBtn(Icons.Filled.FullscreenExit, "Выйти из фокуса") { focus = false }
+                        IconBtn(Icons.AutoMirrored.Filled.Undo, "Отменить") { ctl.undo() }
+                        IconBtn(if (ctl.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Воспроизвести", tint = Pal.accent2) { ctl.togglePlay() }
+                    }
+                }
+                Column(
+                    Modifier.align(if (UiPrefs.contextBarBottom) Alignment.TopCenter else Alignment.BottomCenter).padding(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                     ctl.busy?.let {
                         Surface(shape = RoundedCornerShape(20.dp), color = Pal.panel2) {
                             Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -157,9 +190,10 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
                     color = Color.White, fontSize = 12.sp
                 )
             }
-            if (showLayers) LayersPanel(ctl, onImport = { picker.launch("image/*") })
+            if (!focus && UiPrefs.toolsRight) tools()
+            if (!focus && showLayers && !UiPrefs.layersLeft) layers()
         }
-        Timeline(ctl, onMore = { dialog = Dlg.FRAME_MENU })
+        if (!focus && !UiPrefs.timelineTop) timeline()
     }
 
     when (dialog) {
@@ -174,6 +208,8 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
         Dlg.EXPORT -> ExportDialog(ctl) { dialog = null }
         Dlg.FRAME_MENU -> FrameMenuDialog(ctl) { dialog = null }
         Dlg.PLAYBACK -> PlaybackDialog(ctl) { dialog = null }
+        Dlg.UI -> UiSettingsDialog { dialog = null }
+        Dlg.CURVES -> CurveEditorDialog(ctl) { dialog = null }
         null -> {}
     }
 }
@@ -191,15 +227,15 @@ fun SmallBtn(text: String, selected: Boolean = false, enabled: Boolean = true, o
 }
 
 @Composable
-fun IconBtn(icon: ImageVector, desc: String, selected: Boolean = false, tint: Color = Pal.text, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun IconBtn(icon: ImageVector, desc: String, selected: Boolean = false, tint: Color = Pal.text, modifier: Modifier = Modifier, size: Int = 42, onClick: () -> Unit) {
     IconButton(
         onClick = onClick,
-        modifier = modifier.size(42.dp).clip(RoundedCornerShape(10.dp)).background(if (selected) Pal.accent.copy(alpha = 0.35f) else Color.Transparent)
+        modifier = modifier.size(size.dp).clip(RoundedCornerShape(10.dp)).background(if (selected) Pal.accent.copy(alpha = 0.35f) else Color.Transparent)
     ) { Icon(icon, desc, tint = if (selected) Color.White else tint) }
 }
 
 @Composable
-private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (Dlg) -> Unit, showLayers: Boolean, onToggleLayers: () -> Unit) {
+private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (Dlg) -> Unit, showLayers: Boolean, onToggleLayers: () -> Unit, onFocus: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().height(50.dp).background(Pal.panel).padding(horizontal = 4.dp),
@@ -211,15 +247,18 @@ private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (D
             Text("${ctl.project.width}×${ctl.project.height} · ${ctl.project.fps} fps", fontSize = 11.sp, color = Pal.dim, maxLines = 1)
         }
         Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-            IconBtn(Icons.AutoMirrored.Filled.Undo, "Отменить") { ctl.undo() }
-            IconBtn(Icons.AutoMirrored.Filled.Redo, "Повторить") { ctl.redo() }
-            Spacer(Modifier.width(6.dp))
-            IconBtn(if (ctl.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Воспроизвести", selected = ctl.playing, tint = Pal.accent2) { ctl.togglePlay() }
-            SmallBtn(ctl.playMode.title) { onDialog(Dlg.PLAYBACK) }
-            IconBtn(Icons.Filled.FilterNone, "Луковая кожа", selected = ctl.onionEnabled) { ctl.onionEnabled = !ctl.onionEnabled }
-            IconBtn(Icons.Filled.Tune, "Настройки кальки") { onDialog(Dlg.ONION) }
-            IconBtn(Icons.Filled.Layers, "Слои", selected = showLayers, onClick = onToggleLayers)
-            IconBtn(Icons.Filled.IosShare, "Экспорт", tint = Pal.accent2) { onDialog(Dlg.EXPORT) }
+            if (UiPrefs.visible(TopButton.UNDO)) {
+                IconBtn(Icons.AutoMirrored.Filled.Undo, "Отменить") { ctl.undo() }
+                IconBtn(Icons.AutoMirrored.Filled.Redo, "Повторить") { ctl.redo() }
+                Spacer(Modifier.width(6.dp))
+            }
+            if (UiPrefs.visible(TopButton.PLAY)) IconBtn(if (ctl.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Воспроизвести", selected = ctl.playing, tint = Pal.accent2) { ctl.togglePlay() }
+            if (UiPrefs.visible(TopButton.PLAY_MODE)) SmallBtn(ctl.playMode.title) { onDialog(Dlg.PLAYBACK) }
+            if (UiPrefs.visible(TopButton.ONION)) IconBtn(Icons.Filled.FilterNone, "Луковая кожа", selected = ctl.onionEnabled) { ctl.onionEnabled = !ctl.onionEnabled }
+            if (UiPrefs.visible(TopButton.ONION_SETTINGS)) IconBtn(Icons.Filled.Tune, "Настройки кальки") { onDialog(Dlg.ONION) }
+            if (UiPrefs.visible(TopButton.LAYERS)) IconBtn(Icons.Filled.Layers, "Слои", selected = showLayers, onClick = onToggleLayers)
+            if (UiPrefs.visible(TopButton.FOCUS)) IconBtn(Icons.Filled.Fullscreen, "Режим фокуса", onClick = onFocus)
+            if (UiPrefs.visible(TopButton.EXPORT)) IconBtn(Icons.Filled.IosShare, "Экспорт", tint = Pal.accent2) { onDialog(Dlg.EXPORT) }
             Box {
                 IconBtn(Icons.Filled.MoreVert, "Ещё") { menu = true }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -235,6 +274,10 @@ private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (D
                         ctl.autoKey = AutoKeyMode.entries[(ctl.autoKey.ordinal + 1) % AutoKeyMode.entries.size]
                     })
                     DropdownMenuItem(text = { Text("Сбросить вид") }, onClick = { ctl.viewResetToken++; menu = false })
+                    DropdownMenuItem(text = { Text("Настроить интерфейс…") }, onClick = { menu = false; onDialog(Dlg.UI) })
+                    DropdownMenuItem(text = { Text("Кривые анимации…") }, onClick = { menu = false; onDialog(Dlg.CURVES) })
+                    if (!showLayers || !UiPrefs.visible(TopButton.LAYERS)) CheckItem("Панель слоёв", showLayers) { onToggleLayers() }
+                    if (!UiPrefs.visible(TopButton.EXPORT)) DropdownMenuItem(text = { Text("Экспорт…") }, onClick = { menu = false; onDialog(Dlg.EXPORT) })
                     DropdownMenuItem(text = { Text("Параметры проекта…") }, onClick = { menu = false; onDialog(Dlg.PROJECT) })
                     DropdownMenuItem(text = { Text("Сохранить сейчас") }, onClick = { menu = false; ctl.saveAsync { ctl.toast("Сохранено") } })
                 }
@@ -248,7 +291,7 @@ fun CheckItem(text: String, checked: Boolean, onClick: () -> Unit) {
     DropdownMenuItem(text = { Text((if (checked) "✓  " else "     ") + text) }, onClick = onClick)
 }
 
-private fun toolIcon(t: Tool): ImageVector = when (t) {
+fun toolIcon(t: Tool): ImageVector = when (t) {
     Tool.BRUSH -> Icons.Filled.Brush
     Tool.ERASER -> Icons.Filled.CleaningServices
     Tool.FILL -> Icons.Filled.FormatColorFill
@@ -265,17 +308,19 @@ private fun toolIcon(t: Tool): ImageVector = when (t) {
 
 @Composable
 private fun ToolRail(ctl: EditorController, onColor: () -> Unit, onBrush: () -> Unit) {
+    val btn = UiPrefs.toolSize
     Column(
-        Modifier.width(54.dp).fillMaxHeight().background(Pal.panel).verticalScroll(rememberScrollState()).padding(vertical = 6.dp),
+        Modifier.width((btn + 12).dp).fillMaxHeight().background(Pal.panel).verticalScroll(rememberScrollState()).padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Tool.entries.forEach { t ->
-            if (t == Tool.BONE) Box(Modifier.width(30.dp).height(1.dp).background(Pal.line))
-            IconBtn(toolIcon(t), t.title, selected = ctl.tool == t) {
+        UiPrefs.tools.forEach { t ->
+            if (t == Tool.BONE) Box(Modifier.width((btn - 12).dp).height(1.dp).background(Pal.line))
+            IconBtn(toolIcon(t), t.title, selected = ctl.tool == t, size = btn) {
                 if (ctl.tool == t && (t == Tool.BRUSH || t == Tool.ERASER)) onBrush()
                 ctl.tool = t
                 if (t != Tool.LASSO) ctl.selection = null
             }
+            if (UiPrefs.showToolLabels) Text(t.title.substringBefore(' '), fontSize = 8.sp, color = Pal.dim, maxLines = 1)
         }
         Spacer(Modifier.height(8.dp))
         ColorDot(ctl.color, 36, onClick = onColor)
@@ -291,7 +336,7 @@ private fun BrushSliders(ctl: EditorController, modifier: Modifier) {
     val kind = if (ctl.tool == Tool.ERASER) BrushKind.ERASER else ctl.brushKind
     val b = ctl.settingsFor(kind)
     // высота ползунков подстраивается под свободное место (низкие экраны телефонов)
-    BoxWithConstraints(modifier.fillMaxHeight(), contentAlignment = Alignment.CenterStart) {
+    BoxWithConstraints(modifier.fillMaxHeight(), contentAlignment = if (UiPrefs.slidersRight) Alignment.CenterEnd else Alignment.CenterStart) {
         val bar = ((maxHeight - 100.dp) / 2).coerceIn(36.dp, 150.dp)
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             VerticalSlider(sqrt(((b.size - 1f) / 299f).coerceIn(0f, 1f)), { v -> ctl.updateBrush(kind) { it.copy(size = 1f + 299f * v * v) } }, "${b.size.toInt()}px", barHeight = bar)
@@ -303,7 +348,7 @@ private fun BrushSliders(ctl: EditorController, modifier: Modifier) {
 @Composable
 private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushes: () -> Unit, onBrushDialog: () -> Unit) {
     ctl.version
-    Surface(modifier, shape = RoundedCornerShape(14.dp), color = Pal.panel.copy(alpha = 0.95f), shadowElevation = 6.dp) {
+    Surface(modifier, shape = RoundedCornerShape(14.dp), color = Pal.panel.copy(alpha = UiPrefs.panelAlpha), shadowElevation = 6.dp) {
         Row(
             Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically

@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashReporter(applicationContext)
+        com.animora.studio.ui.UiPrefs.init(applicationContext)
         val store = ProjectStore(applicationContext)
         val crash = File(filesDir, CRASH_FILE).takeIf { it.exists() }?.let { f -> runCatching { f.readText() }.getOrNull().also { f.delete() } }
         setContent {
