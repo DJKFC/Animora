@@ -90,7 +90,8 @@ enum class DragKind { MOVE, SCALE, ROTATE }
 
 class Selection(val layerId: String, val key: Int, val indices: List<Int>)
 
-const val MAX_FRAMES = 3000
+/** Практический предел (≈ 70 минут при 24 fps); таймлайн рисует только видимые кадры. */
+const val MAX_FRAMES = 100_000
 
 class EditorController(
     val project: Project,

@@ -6,6 +6,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,11 +46,13 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -73,15 +79,25 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
     val p = ctl.project
     val layers = p.layers.reversed()
     val rows = layers.size
-    val hs = rememberScrollState()
     val vs = rememberScrollState()
     val density = LocalDensity.current
     val cellPx = with(density) { CELL_W.toPx() }
     var viewW by remember { mutableIntStateOf(0) }
+    // Своя горизонтальная прокрутка: рисуются только видимые кадры, поэтому длина таймлайна не ограничена
+    var scrollX by remember { mutableFloatStateOf(0f) }
+    val maxScroll = max(0f, p.frameCount * cellPx + with(density) { 60.dp.toPx() } - viewW)
+    val maxNow by rememberUpdatedState(maxScroll)
+    val hScroll = rememberScrollableState { d ->
+        val old = scrollX
+        scrollX = (scrollX - d).coerceIn(0f, maxNow)
+        old - scrollX
+    }
+    val sx: () -> Float = { scrollX }
 
+    LaunchedEffect(maxScroll) { scrollX = scrollX.coerceIn(0f, maxScroll) }
     LaunchedEffect(ctl.frame, viewW) {
         val x = ctl.frame * cellPx
-        if (viewW > 0 && (x < hs.value || x > hs.value + viewW - cellPx * 2)) hs.scrollTo(max(0, (x - viewW / 3f).toInt()))
+        if (viewW > 0 && (x < scrollX || x > scrollX + viewW - cellPx * 2)) scrollX = (x - viewW / 3f).coerceIn(0f, maxNow)
     }
 
     Column(Modifier.fillMaxWidth().background(Pal.panel)) {
@@ -112,12 +128,14 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
                     }
                 }
             }
-            Box(Modifier.weight(1f).fillMaxHeight().onSizeChanged { viewW = it.width }.horizontalScroll(hs)) {
-                val total = CELL_W * p.frameCount + 60.dp
-                Column(Modifier.width(total)) {
-                    TimelineHeader(ctl, cellPx, Modifier.width(total).height(HEAD_H))
+            Box(
+                Modifier.weight(1f).fillMaxHeight().onSizeChanged { viewW = it.width }.clipToBounds()
+                    .scrollable(hScroll, Orientation.Horizontal)
+            ) {
+                Column(Modifier.fillMaxWidth()) {
+                    TimelineHeader(ctl, cellPx, sx, viewW, Modifier.fillMaxWidth().height(HEAD_H))
                     Box(Modifier.verticalScroll(vs)) {
-                        TimelineGrid(ctl, cellPx, hs.value, viewW, onMore, Modifier.width(total).height(ROW_H * max(rows, 1)))
+                        TimelineGrid(ctl, cellPx, sx, viewW, onMore, Modifier.fillMaxWidth().height(ROW_H * max(rows, 1)))
                     }
                 }
             }
@@ -126,20 +144,24 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
 }
 
 @Composable
-private fun TimelineHeader(ctl: EditorController, cellPx: Float, modifier: Modifier) {
+private fun TimelineHeader(ctl: EditorController, cellPx: Float, sx: () -> Float, viewW: Int, modifier: Modifier) {
     val frameCount = ctl.project.frameCount.also { ctl.version }
     val textPaint = remember { Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF9C97B5.toInt() } }
     val density = LocalDensity.current
     Canvas(
         modifier.background(Pal.panel2)
-            .pointerInputScrub(ctl, cellPx)
+            .pointerInputScrub(ctl, cellPx, sx)
     ) {
         textPaint.textSize = with(density) { 10.sp.toPx() }
         val fh = size.height
+        val scroll = sx()
+        val f0 = max(0, (scroll / cellPx).toInt() - 2)
+        val f1 = min(frameCount, ((scroll + viewW) / cellPx).toInt() + 3)
+        translate(left = -scroll) {
         if (ctl.useRange) {
             drawRect(Pal.accent2.copy(alpha = 0.18f), Offset(ctl.rangeFrom * cellPx, 0f), Size((ctl.rangeTo - ctl.rangeFrom + 1) * cellPx, fh))
         }
-        for (f in 0 until frameCount) {
+        for (f in f0 until f1) {
             val x = f * cellPx
             val n = f + 1
             if (n == 1 || n % 5 == 0) {
@@ -151,23 +173,26 @@ private fun TimelineHeader(ctl: EditorController, cellPx: Float, modifier: Modif
         val px = ctl.frame * cellPx
         drawRect(Pal.pink, Offset(px, 0f), Size(cellPx, fh), alpha = 0.85f)
         drawContext.canvas.nativeCanvas.drawText("${ctl.frame + 1}", px + 3f, fh * 0.75f, Paint(textPaint).apply { color = android.graphics.Color.WHITE })
+        }
     }
 }
 
 @Composable
-private fun Modifier.pointerInputScrub(ctl: EditorController, cellPx: Float): Modifier {
+private fun Modifier.pointerInputScrub(ctl: EditorController, cellPx: Float, sx: () -> Float): Modifier {
     val c by rememberUpdatedState(ctl)
+    val scroll by rememberUpdatedState(sx)
     return this
-        .pointerInput(cellPx) { detectTapGestures { c.stop(); c.seek((it.x / cellPx).toInt()) } }
+        .pointerInput(cellPx) { detectTapGestures { c.stop(); c.seek(((it.x + scroll()) / cellPx).toInt()) } }
         .pointerInput("drag", cellPx) {
-            detectHorizontalDragGestures(onDragStart = { c.stop(); c.seek((it.x / cellPx).toInt()) }) { ch, _ ->
-                ch.consume(); c.seek((ch.position.x / cellPx).toInt())
+            detectHorizontalDragGestures(onDragStart = { c.stop(); c.seek(((it.x + scroll()) / cellPx).toInt()) }) { ch, _ ->
+                ch.consume(); c.seek(((ch.position.x + scroll()) / cellPx).toInt())
             }
         }
 }
 
 @Composable
-private fun TimelineGrid(ctl: EditorController, cellPx: Float, scrollX: Int, viewW: Int, onMore: () -> Unit, modifier: Modifier) {
+private fun TimelineGrid(ctl: EditorController, cellPx: Float, sx: () -> Float, viewW: Int, onMore: () -> Unit, modifier: Modifier) {
+    val scroll by rememberUpdatedState(sx)
     ctl.version
     val p = ctl.project
     val layers = p.layers.reversed()
@@ -182,19 +207,21 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, scrollX: Int, vie
                 onTap = { o ->
                     val r = (o.y / rowPx).toInt()
                     layersNow.getOrNull(r)?.let { c.selectLayer(it.id) }
-                    c.stop(); c.seek((o.x / cellPx).toInt())
+                    c.stop(); c.seek(((o.x + scroll()) / cellPx).toInt())
                 },
                 onLongPress = { o ->
                     val r = (o.y / rowPx).toInt()
                     layersNow.getOrNull(r)?.let { c.selectLayer(it.id) }
-                    c.stop(); c.seek((o.x / cellPx).toInt()); more()
+                    c.stop(); c.seek(((o.x + scroll()) / cellPx).toInt()); more()
                 }
             )
         }
     ) {
         val fc = p.frameCount
+        val scrollX = sx()
         val f0 = max(0, (scrollX / cellPx).toInt() - 2)
         val f1 = min(fc, ((scrollX + viewW) / cellPx).toInt() + 3)
+        translate(left = -scrollX) {
         layers.forEachIndexed { r, l ->
             val y = r * rowPx
             if (l.id == ctl.activeLayerId) drawRect(Pal.accent.copy(alpha = 0.12f), Offset(0f, y), Size(fc * cellPx, rowPx))
@@ -210,6 +237,7 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, scrollX: Int, vie
                 keys.forEachIndexed { i, (k, kf) ->
                     val end = if (i + 1 < keys.size) keys[i + 1].key else fc
                     if (end <= f0 && i + 1 < keys.size) return@forEachIndexed
+                    if (k > f1) return@forEachIndexed
                     val x0 = k * cellPx; val x1 = min(end, fc) * cellPx
                     val hasNext = i + 1 < keys.size
                     val span = when {
@@ -256,6 +284,7 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, scrollX: Int, vie
         drawRect(Pal.pink.copy(alpha = 0.16f), Offset(px, 0f), Size(cellPx, size.height))
         drawLine(Pal.pink, Offset(px + cellPx / 2, 0f), Offset(px + cellPx / 2, size.height), 2f)
         drawLine(Pal.dim, Offset(fc * cellPx, 0f), Offset(fc * cellPx, size.height), 2f)
+        }
     }
 }
 

@@ -120,7 +120,8 @@ fun NewProjectScreen(existingCount: Int, onBack: () -> Unit, onCreate: (Project)
     val wi = (w.toIntOrNull() ?: 0).coerceIn(0, 8192)
     val hi = (h.toIntOrNull() ?: 0).coerceIn(0, 8192)
     val valid = wi in 16..4096 && hi in 16..4096
-    val frames = max(1, (seconds * fps).toInt()).coerceAtMost(3000)
+    var framesText by remember { mutableStateOf("") }
+    val frames = (framesText.toIntOrNull() ?: (seconds * fps).toInt()).coerceIn(1, com.animora.studio.ui.editor.MAX_FRAMES)
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Pal.bg).systemBarsPadding()) {
         val wide = maxWidth > 760.dp
@@ -165,8 +166,19 @@ fun NewProjectScreen(existingCount: Int, onBack: () -> Unit, onCreate: (Project)
                         fontSize = 12.sp, color = Pal.dim, modifier = Modifier.padding(top = 4.dp)
                     )
 
-                    SectionTitle("Длительность: ${"%.1f".format(seconds)} с = $frames кадров")
-                    Slider(seconds, { seconds = (it * 2).toInt() / 2f }, valueRange = 0.5f..60f)
+                    SectionTitle("Длительность: ${"%.1f".format(frames / fps.toFloat())} с = $frames кадров")
+                    Slider(seconds.coerceIn(0.5f, 60f), { seconds = (it * 2).toInt() / 2f; framesText = "" }, valueRange = 0.5f..60f)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        OutlinedTextField(
+                            framesText, { framesText = it.filter(Char::isDigit).take(6) },
+                            label = { Text("Точно, кадров") }, singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.width(150.dp)
+                        )
+                        listOf(1, 5, 10, 30).forEach { m ->
+                            Chip("$m мин", framesText == (m * 60 * fps).toString()) { framesText = (m * 60 * fps).toString() }
+                        }
+                    }
+                    Text("Ползунок — до минуты; длиннее — введите число кадров (до ${com.animora.studio.ui.editor.MAX_FRAMES}).", fontSize = 11.sp, color = Pal.dim)
 
                     SectionTitle("Фон")
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { BgType.entries.forEach { t -> Chip(t.title, bgType == t) { bgType = t } } }

@@ -222,7 +222,7 @@ fun ProjectDialog(ctl: EditorController, onDismiss: () -> Unit) {
                     listOf(6, 8, 12, 15, 24, 25, 30, 48, 60).forEach { f -> SmallBtn("$f", selected = fps == f) { fps = f } }
                 }
                 OutlinedTextField(
-                    frames, { frames = it.filter { c -> c.isDigit() }.take(4) }, label = { Text("Длина, кадров (≈ ${"%.1f".format((frames.toIntOrNull() ?: 0) / fps.toFloat())} с)") },
+                    frames, { frames = it.filter { c -> c.isDigit() }.take(6) }, label = { Text("Длина, кадров (≈ ${"%.1f".format((frames.toIntOrNull() ?: 0) / fps.toFloat())} с)") },
                     singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
                 )
                 SectionTitle("Фон")
