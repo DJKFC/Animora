@@ -246,7 +246,7 @@ private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (D
             Text(ctl.project.name.also { ctl.version }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Pal.text)
             Text("${ctl.project.width}×${ctl.project.height} · ${ctl.project.fps} fps", fontSize = 11.sp, color = Pal.dim, maxLines = 1)
         }
-        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.weight(1f, fill = false).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
             if (UiPrefs.visible(TopButton.UNDO)) {
                 IconBtn(Icons.AutoMirrored.Filled.Undo, "Отменить") { ctl.undo() }
                 IconBtn(Icons.AutoMirrored.Filled.Redo, "Повторить") { ctl.redo() }
@@ -259,6 +259,9 @@ private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (D
             if (UiPrefs.visible(TopButton.LAYERS)) IconBtn(Icons.Filled.Layers, "Слои", selected = showLayers, onClick = onToggleLayers)
             if (UiPrefs.visible(TopButton.FOCUS)) IconBtn(Icons.Filled.Fullscreen, "Режим фокуса", onClick = onFocus)
             if (UiPrefs.visible(TopButton.EXPORT)) IconBtn(Icons.Filled.IosShare, "Экспорт", tint = Pal.accent2) { onDialog(Dlg.EXPORT) }
+        }
+        // меню «⋮» закреплено справа и не уезжает за край на узких экранах
+        run {
             Box {
                 IconBtn(Icons.Filled.MoreVert, "Ещё") { menu = true }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
