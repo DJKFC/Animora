@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import com.animora.studio.engine.AudioCache
 import com.animora.studio.engine.AudioPlayback
 import com.animora.studio.engine.Bones
+import com.animora.studio.engine.FloatList
 import com.animora.studio.engine.FloodFill
 import com.animora.studio.engine.FrameOptions
 import com.animora.studio.engine.History
@@ -38,6 +39,9 @@ import com.animora.studio.model.InstanceElement
 import com.animora.studio.model.LoopMode
 import com.animora.studio.model.Symbol
 import com.animora.studio.model.SymbolRegistry
+import com.animora.studio.model.TextAlign
+import com.animora.studio.model.TextElement
+import com.animora.studio.model.TextFont
 import com.animora.studio.model.Bone
 import com.animora.studio.model.BrushLibrary
 import com.animora.studio.model.BrushRegistry
@@ -87,7 +91,7 @@ data class BrushSettings(
 enum class Tool(val title: String) {
     BRUSH("Кисть"), ERASER("Ластик"), FILL("Заливка"), EYEDROPPER("Пипетка"),
     LINE("Линия"), RECT("Прямоугольник"), ELLIPSE("Эллипс"),
-    LASSO("Лассо"), TRANSFORM("Трансформация ключа"),
+    LASSO("Лассо"), TRANSFORM("Трансформация ключа"), TEXT("Текст"),
     BONE("Кость"), POSE("Поза"), HAND("Рука")
 }
 
@@ -300,12 +304,18 @@ class EditorController(
         val l = activeLayer ?: return null
         val err = when {
             l.type != LayerType.DRAWING -> "Выберите слой рисования"
-            l.locked -> "Слой заблокирован"
-            !l.visible -> "Слой скрыт"
+            l.locked || folderLocked(l) -> "Слой заблокирован"
+            !Renderer.effectivelyVisible(project.layers, l) -> "Слой скрыт"
             else -> null
         }
         if (err != null) { if (!silent) toast(err); return null }
         return l
+    }
+
+    private fun folderLocked(l: Layer): Boolean {
+        var f = project.layer(l.folderId); var g = 0
+        while (f != null && g++ < 16) { if (f.locked) return true; f = project.layer(f.folderId) }
+        return false
     }
 
     /** Ключ для рисования в текущем кадре (вызывать после checkpoint). */
@@ -915,6 +925,7 @@ class EditorController(
             px in 0 until e.bitmap.width && py in 0 until e.bitmap.height && Color.alpha(e.bitmap.getPixel(px, py)) > 20
         }
         is InstanceElement -> e.bounds().let { b -> b.inset(-r, -r); b.contains(x, y) }
+        is TextElement -> e.bounds().let { b -> b.inset(-r, -r); b.contains(x, y) }
     }
 
     fun fillAt(x: Float, y: Float) {
@@ -968,6 +979,9 @@ class EditorController(
                     val r = el.bounds(); m.mapRect(r); pointInPolygon(r.centerX(), r.centerY(), poly)
                 }
                 is InstanceElement -> {
+                    val r = el.bounds(); m.mapRect(r); pointInPolygon(r.centerX(), r.centerY(), poly)
+                }
+                is TextElement -> {
                     val r = el.bounds(); m.mapRect(r); pointInPolygon(r.centerX(), r.centerY(), poly)
                 }
             }
@@ -1127,6 +1141,7 @@ class EditorController(
                     BitmapElement(Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888), Matrix(e.matrix), e.alpha)
                 }
                 is InstanceElement -> e.with(effect = e.effect.copy(tint = color, tintAmount = 1f))
+                is TextElement -> e.copyWith(color = color)
             }
         }
         changed()
@@ -1203,6 +1218,10 @@ class EditorController(
         val k = keyForTransform(l) ?: return false
         ensurePivot(l, k)
         ktKey = k; ktStart = k.transform; dragKind = kind
+        // многокадровая правка: тот же сдвиг/поворот/масштаб — всем ключам выделенного диапазона
+        ktOthers = frameSel?.takeIf { l.id in it.layers && frame in it.from..it.to }?.let { fs ->
+            l.keyframes.subMap(fs.from, true, fs.to, true).values.filter { it !== k }.associateWith { it.transform }
+        } ?: emptyMap()
         dragStart.set(x, y)
         keyPivotDoc()?.let { ktPivotDoc.set(it.x, it.y) }
         val post = Matrix()
@@ -1231,8 +1250,15 @@ class EditorController(
                 st.copy(sx = st.sx * f, sy = st.sy * f)
             }
         }
+        val nt = k.transform
+        ktOthers.forEach { (ok, t0) ->
+            ok.transform = t0.copy(tx = t0.tx + nt.tx - st.tx, ty = t0.ty + nt.ty - st.ty, rot = t0.rot + nt.rot - st.rot,
+                sx = t0.sx * (if (st.sx != 0f) nt.sx / st.sx else 1f), sy = t0.sy * (if (st.sy != 0f) nt.sy / st.sy else 1f))
+        }
         changed()
     }
+
+    private var ktOthers: Map<Keyframe, Transform> = emptyMap()
 
     fun endKeyTransform() { ktKey = null; endCameraDrag() }
 
@@ -1393,7 +1419,12 @@ class EditorController(
         checkpoint()
         val i = project.layers.indexOfFirst { it.id == id }
         project.layers.removeAt(i)
-        project.layers.forEach { if (it.bindLayer == id) { it.bindLayer = null; it.bindBone = null } }
+        project.layers.forEach {
+            if (it.bindLayer == id) { it.bindLayer = null; it.bindBone = null }
+            if (it.parentId == id) it.parentId = null
+            if (it.folderId == id) it.folderId = null
+            if (it.maskedBy == id) it.maskedBy = null
+        }
         activeLayerId = project.layers[max(0, i - 1)].id
         selection = null; changed()
     }
@@ -1474,6 +1505,240 @@ class EditorController(
             changed(); toast("Изображение добавлено как направляющий слой (не экспортируется)")
         }
     }
+
+    // ---------------- текст ----------------
+    /** Запрос на ввод текста: точка (документ) для нового текста; редактирование — через выделение. */
+    var textRequest by mutableStateOf<PointF?>(null)
+    /** Запрос на правку выделенного текста (касание по тексту инструментом «Текст»). */
+    var editTextRequested by mutableStateOf(false)
+    var textSize by mutableFloatStateOf(64f)
+    var textFont by mutableStateOf(TextFont.SANS)
+    var textBold by mutableStateOf(false)
+    var textItalic by mutableStateOf(false)
+    var textAlign by mutableStateOf(TextAlign.LEFT)
+    var textOutline by mutableFloatStateOf(0f)
+
+    fun requestText(x: Float, y: Float) {
+        if (editableLayer() == null) return
+        textRequest = PointF(x, y)
+    }
+
+    fun selectedText(): TextElement? {
+        val s = selection ?: return null
+        if (s.indices.size != 1) return null
+        return selectionKey()?.elements?.getOrNull(s.indices[0]) as? TextElement
+    }
+
+    fun addText(text: String) {
+        val pt = textRequest ?: return
+        textRequest = null
+        if (text.isBlank()) return
+        val l = editableLayer() ?: return
+        checkpoint()
+        val k = keyForDrawing(l)
+        val m = Matrix().apply { setTranslate(pt.x, pt.y); postConcat(inverseLayerMatrix(l)) }
+        k.elements.add(TextElement(text, textSize, color, textFont, textBold, textItalic, textAlign, m, 1f, textOutline, 0xFF000000.toInt()))
+        selection = Selection(l.id, frame, listOf(k.elements.size - 1))
+        pushRecentColor(color); changed()
+    }
+
+    fun updateText(f: (TextElement) -> TextElement) {
+        val s = selection ?: return
+        val k = selectionKey() ?: return
+        val e = k.elements.getOrNull(s.indices.firstOrNull() ?: return) as? TextElement ?: return
+        checkpointOnce("text")
+        k.elements[s.indices[0]] = f(e)
+        changed()
+    }
+
+    // ---------------- направляющая движения ----------------
+    /** Режим рисования траектории для твина текущего ключа. */
+    var drawingGuide by mutableStateOf(false)
+
+    private fun guidePostMatrix(l: Layer): Matrix {
+        val post = Matrix()
+        Renderer.parentMatrix(project.layers, l, frame)?.let { post.postConcat(it) }
+        Bones.bindMatrix(project, l, frame)?.let { post.postConcat(it) }
+        Renderer.cameraMatrix(project, frame, l.depth)?.let { post.postConcat(it) }
+        return post
+    }
+
+    fun setGuide(docPts: FloatArray) {
+        drawingGuide = false
+        val l = editableLayer() ?: return
+        val e = l.keyframes.floorEntry(frame) ?: run { toast("Нет ключевого кадра"); return }
+        if (docPts.size < 4) return
+        checkpoint()
+        val inv = Matrix(); guidePostMatrix(l).invert(inv)
+        val p = docPts.copyOf(); inv.mapPoints(p)
+        // прореживание: точки не ближе 3 px
+        val out = FloatList()
+        out.add(p[0]); out.add(p[1])
+        var i = 2
+        while (i < p.size) {
+            if (hypot(p[i] - out[out.size - 2], p[i + 1] - out[out.size - 1]) >= 3f || i >= p.size - 2) { out.add(p[i]); out.add(p[i + 1]) }
+            i += 2
+        }
+        val k = e.value
+        ensurePivot(l, k)
+        k.guide = out.toArray()
+        k.tween = TweenType.MOTION
+        if (l.keyframes.higherKey(e.key) == null) {
+            val end = min(project.frameCount - 1, e.key + max(12, project.fps))
+            if (end > e.key) l.keyframes[end] = k.copy().also { it.tween = TweenType.NONE; it.guide = null }
+        }
+        changed(); toast("Траектория задана: объект пройдёт по ней от ключа до следующего")
+    }
+
+    fun clearGuide() {
+        val k = heldKey()?.second ?: return
+        if (k.guide == null) return
+        checkpoint(); k.guide = null; changed()
+    }
+
+    fun toggleOrient() {
+        val k = heldKey()?.second ?: return
+        checkpoint(); k.orientToPath = !k.orientToPath; changed()
+    }
+
+    /** Траектория текущего твина в координатах холста (для отрисовки). */
+    fun guideDoc(): FloatArray? {
+        val l = activeLayer ?: return null
+        val g = l.keyframes.floorEntry(frame)?.value?.guide ?: return null
+        val p = g.copyOf(); guidePostMatrix(l).mapPoints(p); return p
+    }
+
+    // ---------------- родительские слои и папки ----------------
+    fun setParent(layerId: String, parentId: String?) {
+        val l = project.layer(layerId) ?: return
+        var cur = project.layer(parentId)
+        while (cur != null) { if (cur.id == layerId) { toast("Нельзя: получится цикл родителей"); return }; cur = project.layer(cur.parentId) }
+        checkpoint(); l.parentId = parentId; changed()
+    }
+
+    fun addFolder() {
+        checkpoint()
+        val idx = project.layers.indexOfFirst { it.id == activeLayerId }.let { if (it < 0) project.layers.size else it + 1 }
+        val f = Layer(name = "Папка ${project.layers.count { it.type == LayerType.FOLDER } + 1}", type = LayerType.FOLDER, color = 0xFF9C97B5.toInt())
+        project.layers.add(idx, f)
+        activeLayer?.takeIf { it.type != LayerType.FOLDER }?.let { it.folderId = f.id }
+        activeLayerId = f.id
+        changed(); toast("Папка создана. Слои кладутся в неё в их свойствах («Папка: …»)")
+    }
+
+    fun setFolder(layerId: String, folderId: String?) {
+        val l = project.layer(layerId) ?: return
+        if (l.id == folderId) return
+        checkpoint(); l.folderId = folderId
+        // слой встаёт сразу под папкой
+        if (folderId != null) {
+            project.layers.remove(l)
+            val fi = project.layers.indexOfFirst { it.id == folderId }
+            project.layers.add(max(0, fi), l)
+        }
+        changed()
+    }
+
+    /** Слои в порядке показа (сверху вниз) с отступом; дети свёрнутых папок скрыты. */
+    fun displayLayers(): List<Pair<Layer, Int>> {
+        val all = project.layers.reversed()
+        fun depthOf(l: Layer): Int { var d = 0; var f = project.layer(l.folderId); var g = 0; while (f != null && g++ < 16) { d++; f = project.layer(f.folderId) }; return d }
+        fun hidden(l: Layer): Boolean { var f = project.layer(l.folderId); var g = 0; while (f != null && g++ < 16) { if (f.collapsed) return true; f = project.layer(f.folderId) }; return false }
+        return all.filter { !hidden(it) }.map { it to depthOf(it) }
+    }
+
+    // ---------------- выделение кадров на таймлайне ----------------
+    class FrameSel(val layers: Set<String>, val from: Int, val to: Int)
+    var frameSel by mutableStateOf<FrameSel?>(null)
+    var frameSelectMode by mutableStateOf(false)
+    private var frameClipboard: Map<String, List<Pair<Int, Keyframe>>>? = null
+
+    fun selectFrames(layerIds: Set<String>, a: Int, b: Int) {
+        frameSel = FrameSel(layerIds, min(a, b).coerceAtLeast(0), max(a, b).coerceAtMost(project.frameCount - 1))
+    }
+
+    private fun selLayers(): List<Layer> = frameSel?.let { fs -> project.layers.filter { it.id in fs.layers } } ?: emptyList()
+
+    fun moveSelectedFrames(delta: Int) {
+        val fs = frameSel ?: return
+        if (delta == 0) return
+        val d = delta.coerceAtLeast(-fs.from)
+        if (d == 0) return
+        checkpoint()
+        for (l in selLayers()) {
+            val keys = l.keyframes.subMap(fs.from, true, fs.to, true).entries.map { it.key to it.value }
+            keys.forEach { l.keyframes.remove(it.first) }
+            keys.forEach { (k, v) -> l.keyframes[k + d] = v }
+            val poses = l.poses.subMap(fs.from, true, fs.to, true).entries.map { it.key to it.value }
+            poses.forEach { l.poses.remove(it.first) }
+            poses.forEach { (k, v) -> l.poses[k + d] = v }
+            l.audio?.let { c -> if (c.startFrame in fs.from..fs.to) l.audio = c.copy(startFrame = c.startFrame + d) }
+        }
+        if (fs.to + d >= project.frameCount) { project.frameCount = (fs.to + d + 1).coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1 }
+        frameSel = FrameSel(fs.layers, fs.from + d, fs.to + d)
+        changed()
+    }
+
+    fun copySelectedFrames(cut: Boolean = false) {
+        val fs = frameSel ?: return
+        frameClipboard = selLayers().associate { l -> l.id to l.keyframes.subMap(fs.from, true, fs.to, true).entries.map { (it.key - fs.from) to it.value.copy() } }
+        if (cut) deleteSelectedKeys() else toast("Кадры скопированы")
+    }
+
+    fun pasteFrames() {
+        val clip = frameClipboard ?: run { toast("Буфер кадров пуст"); return }
+        checkpoint()
+        var maxEnd = 0
+        clip.forEach { (lid, keys) ->
+            val l = project.layer(lid) ?: (if (clip.size == 1) activeLayer else null) ?: return@forEach
+            keys.forEach { (off, k) -> l.keyframes[frame + off] = k.copy(); maxEnd = max(maxEnd, frame + off) }
+        }
+        if (maxEnd >= project.frameCount) { project.frameCount = (maxEnd + 1).coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1 }
+        changed()
+    }
+
+    fun deleteSelectedKeys() {
+        val fs = frameSel ?: return
+        checkpoint()
+        selLayers().forEach { l ->
+            l.keyframes.keys.filter { it in fs.from..fs.to }.forEach { l.keyframes.remove(it) }
+            l.poses.keys.filter { it in fs.from..fs.to }.forEach { l.poses.remove(it) }
+        }
+        changed()
+    }
+
+    fun reverseSelectedFrames() {
+        val fs = frameSel ?: return
+        checkpoint()
+        for (l in selLayers()) {
+            val entries = l.keyframes.subMap(fs.from, true, fs.to, true).entries.map { it.key to it.value }
+            if (entries.isEmpty()) continue
+            entries.forEach { l.keyframes.remove(it.first) }
+            entries.forEachIndexed { i, (_, v) ->
+                val e = if (i + 1 < entries.size) entries[i + 1].first else fs.to + 1
+                l.keyframes[fs.from + fs.to + 1 - e] = v
+            }
+        }
+        changed()
+    }
+
+    /** Растянуть/сжать тайминг выделенного диапазона. */
+    fun scaleSelectedFrames(factor: Float) {
+        val fs = frameSel ?: return
+        checkpoint()
+        var newTo = fs.to
+        for (l in selLayers()) {
+            val entries = l.keyframes.subMap(fs.from, true, fs.to, true).entries.map { it.key to it.value }
+            entries.forEach { l.keyframes.remove(it.first) }
+            entries.forEach { (k, v) -> val nk = fs.from + ((k - fs.from) * factor).roundToIntCompat(); l.keyframes[nk] = v; newTo = max(newTo, nk) }
+        }
+        val end = fs.from + ((fs.to - fs.from + 1) * factor).roundToIntCompat() - 1
+        if (end >= project.frameCount) { project.frameCount = (end + 1).coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1 }
+        frameSel = FrameSel(fs.layers, fs.from, max(fs.from, end).coerceAtMost(project.frameCount - 1))
+        changed()
+    }
+
+    private fun Float.roundToIntCompat() = kotlin.math.round(this).toInt()
 
     // ---------------- символы и библиотека ----------------
     init { SymbolRegistry.project = project }

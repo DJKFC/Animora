@@ -37,7 +37,7 @@ enum class BlendMode(val title: String, val mode: PorterDuff.Mode?) {
     ADD("Добавление", PorterDuff.Mode.ADD)
 }
 
-enum class LayerType { DRAWING, BONES, AUDIO, CAMERA }
+enum class LayerType { DRAWING, BONES, AUDIO, CAMERA, FOLDER }
 
 enum class BgType(val title: String) { SOLID("Цвет"), TRANSPARENT("Прозрачный"), PAPER("Бумага") }
 
@@ -200,9 +200,13 @@ class Keyframe(
     var curve: EaseCurve? = null,
     /** Отдельные кривые для свойств (как в редакторе движения Animate). */
     var separateCurves: Boolean = false,
-    val propCurves: HashMap<CurveProp, EaseCurve> = HashMap()
+    val propCurves: HashMap<CurveProp, EaseCurve> = HashMap(),
+    /** Направляющая движения (x,y парами, координаты родителя слоя): твин движения идёт вдоль неё. */
+    var guide: FloatArray? = null,
+    /** Поворачивать объект по касательной к направляющей. */
+    var orientToPath: Boolean = false
 ) {
-    fun copy() = Keyframe(elements.toMutableList(), tween, easing, transform, label, curve, separateCurves, HashMap(propCurves))
+    fun copy() = Keyframe(elements.toMutableList(), tween, easing, transform, label, curve, separateCurves, HashMap(propCurves), guide, orientToPath)
 
     /** Прогресс свойства prop при линейном прогрессе raw (0..1) с учётом кривых. */
     fun ease(prop: CurveProp, raw: Float): Float =
@@ -257,12 +261,19 @@ class Layer(
     /** Глубина для камеры: 0 — обычно, больше — дальше (параллакс), −1 — закреплён на экране. */
     var depth: Float = 0f,
     /** Звуковой клип (для слоя типа AUDIO). */
-    var audio: AudioClip? = null
+    var audio: AudioClip? = null,
+    /** Родительский слой: его трансформация (твин движения) переносится на этот слой. */
+    var parentId: String? = null,
+    /** Папка, в которой лежит слой. */
+    var folderId: String? = null,
+    /** Для папки — свёрнута ли она в таймлайне и панели слоёв. */
+    var collapsed: Boolean = false
 ) {
     fun copy(freshId: Boolean = false): Layer {
         val l = Layer(
             if (freshId) newId() else id, name, type, visible, locked, opacity, blend, guide, color,
-            bindLayer = bindLayer, bindBone = bindBone, isMask = isMask, maskedBy = maskedBy, depth = depth, audio = audio
+            bindLayer = bindLayer, bindBone = bindBone, isMask = isMask, maskedBy = maskedBy, depth = depth, audio = audio,
+            parentId = parentId, folderId = folderId, collapsed = collapsed
         )
         keyframes.forEach { (f, k) -> l.keyframes[f] = k.copy() }
         l.bones.addAll(bones)
@@ -414,5 +425,52 @@ object SymbolRegistry {
         }
         val p = project
         return r ?: RectF((p?.width ?: 0) / 2f - 20f, (p?.height ?: 0) / 2f - 20f, (p?.width ?: 0) / 2f + 20f, (p?.height ?: 0) / 2f + 20f)
+    }
+}
+
+enum class TextFont(val title: String) { SANS("Без засечек"), SERIF("С засечками"), MONO("Моноширинный"), HAND("Рукописный"), CONDENSED("Узкий") }
+enum class TextAlign(val title: String) { LEFT("Влево"), CENTER("По центру"), RIGHT("Вправо") }
+
+/** Текстовый блок. matrix — координаты текста (0,0 — левый верх первой строки) → слой. */
+class TextElement(
+    val text: String,
+    val size: Float,
+    val color: Int,
+    val font: TextFont = TextFont.SANS,
+    val bold: Boolean = false,
+    val italic: Boolean = false,
+    val align: TextAlign = TextAlign.LEFT,
+    val matrix: Matrix = Matrix(),
+    val alpha: Float = 1f,
+    val outline: Float = 0f,
+    val outlineColor: Int = 0xFF000000.toInt()
+) : Element() {
+    val lines: List<String> get() = text.split('\n')
+
+    /** Приблизительная ширина без Paint (для габаритов в модели): уточняется в рендере. */
+    private fun approxWidth(): Float = (lines.maxOfOrNull { it.length } ?: 1) * size * (if (font == TextFont.MONO) 0.6f else 0.55f)
+
+    fun localBounds(): RectF {
+        val w = measure?.invoke(this) ?: approxWidth()
+        val left = when (align) { TextAlign.LEFT -> 0f; TextAlign.CENTER -> -w / 2; TextAlign.RIGHT -> -w }
+        return RectF(left - outline, -size * 0.9f - outline, left + w + outline, size * 1.2f * (lines.size - 1) + size * 0.3f + outline)
+    }
+
+    override fun bounds(): RectF { val r = localBounds(); matrix.mapRect(r); return r }
+
+    override fun transformed(m: Matrix): TextElement {
+        val mm = Matrix(matrix); mm.postConcat(m)
+        return copyWith(matrix = mm)
+    }
+
+    fun copyWith(
+        text: String = this.text, size: Float = this.size, color: Int = this.color, font: TextFont = this.font,
+        bold: Boolean = this.bold, italic: Boolean = this.italic, align: TextAlign = this.align,
+        matrix: Matrix = Matrix(this.matrix), alpha: Float = this.alpha, outline: Float = this.outline, outlineColor: Int = this.outlineColor
+    ) = TextElement(text, size, color, font, bold, italic, align, matrix, alpha, outline, outlineColor)
+
+    companion object {
+        /** Точное измерение ширины, подключается рендером (Paint). */
+        @Volatile var measure: ((TextElement) -> Float)? = null
     }
 }

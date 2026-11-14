@@ -67,6 +67,8 @@ object UiPrefs {
         workspace = p.getInt("workspace", 0xFF24222E.toInt())
         tools = p.getString("tools", null)?.split(",")?.mapNotNull { n -> Tool.entries.firstOrNull { it.name == n } }
             ?.takeIf { it.isNotEmpty() } ?: Tool.entries.toList()
+        // новые инструменты появляются на панели у тех, кто уже настраивал её раньше
+        if (p.getInt("toolsVer", 1) < 2 && Tool.TEXT !in tools) tools = tools.toMutableList().also { l -> l.add((l.indexOf(Tool.TRANSFORM) + 1).coerceIn(0, l.size), Tool.TEXT) }
         hiddenTop = p.getString("hiddenTop", "")!!.split(",").mapNotNull { n -> TopButton.entries.firstOrNull { it.name == n } }.toSet()
         Pal.accent = Color(accent)
     }
@@ -82,7 +84,7 @@ object UiPrefs {
             .putInt("toolSize", toolSize).putInt("layersWidth", layersWidth)
             .putInt("timelineRows", timelineRows).putInt("timelineCell", timelineCell)
             .putFloat("panelAlpha", panelAlpha).putInt("accent", accent).putInt("workspace", workspace)
-            .putString("tools", tools.joinToString(",") { it.name })
+            .putString("tools", tools.joinToString(",") { it.name }).putInt("toolsVer", 2)
             .putString("hiddenTop", hiddenTop.joinToString(",") { it.name })
             .apply()
     }

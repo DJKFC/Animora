@@ -78,6 +78,7 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
     private var shapeActive = false
     private val lasso = FloatList()
     private var lassoActive = false
+    private var guideActive = false
     private var selDragging = false
     private var keyDragging = false
     private var poseDragging = false
@@ -286,6 +287,15 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
 
     /** Траектория твина движения: точка на каждый кадр — видно расстановку и ускорение (как «тайминг-чарт»). */
     private fun drawMotionPath(canvas: Canvas, vs: Float) {
+        ctl.guideDoc()?.let { g ->
+            if (g.size >= 4) {
+                overlay.reset(); overlay.isAntiAlias = true; overlay.style = Paint.Style.STROKE
+                overlay.strokeWidth = 3f / vs; overlay.color = 0xB03DDC97.toInt()
+                val gp = Path(); gp.moveTo(g[0], g[1]); var j = 2
+                while (j < g.size) { gp.lineTo(g[j], g[j + 1]); j += 2 }
+                canvas.drawPath(gp, overlay)
+            }
+        }
         val path = ctl.motionPath()
         if (path.size < 2) return
         overlay.reset(); overlay.isAntiAlias = true; overlay.style = Paint.Style.STROKE
@@ -450,7 +460,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 selDragging = ctl.selection != null && ctl.beginSelectionDrag(d[0], d[1], tolDoc(), rotOffset())
                 if (!selDragging) { ctl.selection = null; lasso.clear(); lasso.add(d[0]); lasso.add(d[1]); lassoActive = true }
             }
-            Tool.TRANSFORM -> keyDragging = ctl.beginKeyTransform(d[0], d[1], tolDoc(), rotOffset())
+            Tool.TRANSFORM -> if (ctl.drawingGuide) { lasso.clear(); lasso.add(d[0]); lasso.add(d[1]); lassoActive = true; guideActive = true }
+                else keyDragging = ctl.beginKeyTransform(d[0], d[1], tolDoc(), rotOffset())
             Tool.POSE -> { toScene(d); poseDragging = ctl.beginPose(d[0], d[1], tolDoc()) }
             Tool.BONE -> { toScene(d); shapeX0 = d[0]; shapeY0 = d[1]; shapeX1 = d[0]; shapeY1 = d[1]; shapeActive = false }
             Tool.EYEDROPPER -> pick(d[0], d[1])
@@ -481,7 +492,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 val d = toDoc(e.getX(i), e.getY(i))
                 if (selDragging) ctl.updateSelectionDrag(d[0], d[1]) else { lasso.add(d[0]); lasso.add(d[1]) }
             }
-            Tool.TRANSFORM -> if (keyDragging) { val d = toDoc(e.getX(i), e.getY(i)); ctl.updateKeyTransform(d[0], d[1]) }
+            Tool.TRANSFORM -> if (guideActive) { val d = toDoc(e.getX(i), e.getY(i)); lasso.add(d[0]); lasso.add(d[1]) }
+                else if (keyDragging) { val d = toDoc(e.getX(i), e.getY(i)); ctl.updateKeyTransform(d[0], d[1]) }
             Tool.POSE -> if (poseDragging) { val d = toScene(toDoc(e.getX(i), e.getY(i))); ctl.dragPose(d[0], d[1]) }
             Tool.BONE -> { val d = toScene(toDoc(e.getX(i), e.getY(i))); shapeX1 = d[0]; shapeY1 = d[1]; shapeActive = true; curBonePreview() }
             Tool.EYEDROPPER -> { val d = toDoc(e.getX(i), e.getY(i)); pick(d[0], d[1]) }
@@ -511,7 +523,17 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                     lasso.clear()
                 }
             }
-            Tool.TRANSFORM -> { if (keyDragging) ctl.endKeyTransform(); keyDragging = false }
+            Tool.TRANSFORM -> {
+                if (guideActive) { guideActive = false; lassoActive = false; if (lasso.size >= 4) ctl.setGuide(lasso.toArray()); lasso.clear() }
+                if (keyDragging) ctl.endKeyTransform(); keyDragging = false
+            }
+            Tool.TEXT -> {
+                if (e.eventTime - downTime < 500) {
+                    val d = toDoc(e.getX(i), e.getY(i))
+                    ctl.selectAt(d[0], d[1], tolDoc() * 0.5f)
+                    if (ctl.selectedText() != null) ctl.editTextRequested = true else { ctl.selection = null; ctl.requestText(d[0], d[1]) }
+                }
+            }
             Tool.POSE -> { if (poseDragging) ctl.endPose(); poseDragging = false }
             Tool.BONE -> {
                 liveStroke = null

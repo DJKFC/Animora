@@ -12,6 +12,7 @@ import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.Shader
+import android.graphics.Typeface
 import com.animora.studio.model.BgType
 import com.animora.studio.model.BitmapElement
 import com.animora.studio.model.BrushKind
@@ -19,6 +20,9 @@ import com.animora.studio.model.BrushRegistry
 import com.animora.studio.model.CurveProp
 import com.animora.studio.model.Keyframe
 import com.animora.studio.model.InstanceElement
+import com.animora.studio.model.TextAlign
+import com.animora.studio.model.TextElement
+import com.animora.studio.model.TextFont
 import com.animora.studio.model.CustomBrush
 import com.animora.studio.model.Element
 import com.animora.studio.model.Layer
@@ -60,6 +64,23 @@ class Renderer {
     private val dstOut = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
 
     companion object {
+        fun configureText(p: Paint, e: TextElement) {
+            p.reset(); p.isAntiAlias = true
+            p.textSize = e.size
+            val style = when { e.bold && e.italic -> Typeface.BOLD_ITALIC; e.bold -> Typeface.BOLD; e.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
+            val family = when (e.font) {
+                TextFont.SANS -> "sans-serif"; TextFont.SERIF -> "serif"; TextFont.MONO -> "monospace"
+                TextFont.HAND -> "casual"; TextFont.CONDENSED -> "sans-serif-condensed"
+            }
+            p.typeface = Typeface.create(family, style)
+            p.textAlign = when (e.align) { TextAlign.LEFT -> Paint.Align.LEFT; TextAlign.CENTER -> Paint.Align.CENTER; TextAlign.RIGHT -> Paint.Align.RIGHT }
+        }
+
+        init {
+            val mp = Paint(Paint.ANTI_ALIAS_FLAG)
+            TextElement.measure = { e -> synchronized(mp) { configureText(mp, e); e.lines.maxOfOrNull { mp.measureText(it) } ?: 0f } }
+        }
+
         const val ONION_PREV = 0xFFE53950.toInt()
         const val ONION_NEXT = 0xFF2BB673.toInt()
         @Volatile private var paper: Bitmap? = null
@@ -91,15 +112,72 @@ class Renderer {
         }
 
         /** Трансформация твина с учётом кривых по свойствам. */
-        fun tweenTransform(k: Keyframe, next: Keyframe, raw: Float): Transform = Transform.lerpProps(
-            k.transform, next.transform,
-            k.ease(CurveProp.POSITION, raw), k.ease(CurveProp.ROTATION, raw),
-            k.ease(CurveProp.SCALE, raw), k.ease(CurveProp.ALPHA, raw)
-        )
+        fun tweenTransform(k: Keyframe, next: Keyframe, raw: Float): Transform {
+            val base = Transform.lerpProps(
+                k.transform, next.transform,
+                k.ease(CurveProp.POSITION, raw), k.ease(CurveProp.ROTATION, raw),
+                k.ease(CurveProp.SCALE, raw), k.ease(CurveProp.ALPHA, raw)
+            )
+            val g = k.guide ?: return base
+            if (g.size < 4) return base
+            // движение по направляющей: центр объекта идёт по кривой, скорость — по кривой позиции
+            val p = pathAt(g, k.ease(CurveProp.POSITION, raw))
+            var r = base.copy(tx = p[0] - base.px, ty = p[1] - base.py)
+            if (k.orientToPath) r = r.copy(rot = base.rot + normalizeDeg(p[2] - pathAt(g, 0f)[2]))
+            return r
+        }
+
+        /** Точка и угол касательной (°) на ломаной xy-пар по доле длины t. */
+        fun pathAt(g: FloatArray, t: Float): FloatArray {
+            val n = g.size / 2
+            var total = 0f
+            for (i in 1 until n) total += hypot(g[i * 2] - g[i * 2 - 2], g[i * 2 + 1] - g[i * 2 - 1])
+            if (total <= 0f) return floatArrayOf(g[0], g[1], 0f)
+            var d = t.coerceIn(0f, 1f) * total
+            for (i in 1 until n) {
+                val ax = g[i * 2 - 2]; val ay = g[i * 2 - 1]; val bx = g[i * 2]; val by = g[i * 2 + 1]
+                val len = hypot(bx - ax, by - ay)
+                if (d <= len || i == n - 1) {
+                    val u = if (len <= 0f) 0f else (d / len).coerceIn(0f, 1f)
+                    val ang = Math.toDegrees(atan2((by - ay).toDouble(), (bx - ax).toDouble())).toFloat()
+                    return floatArrayOf(ax + (bx - ax) * u, ay + (by - ay) * u, ang)
+                }
+                d -= len
+            }
+            return floatArrayOf(g[g.size - 2], g[g.size - 1], 0f)
+        }
+
+        /** Цепочка родительских слоёв: их трансформации ключей применяются к дочернему слою. */
+        fun parentMatrix(layers: List<Layer>, layer: Layer, frame: Int): Matrix? {
+            var cur = layers.firstOrNull { it.id == layer.parentId }
+            var m: Matrix? = null
+            var guard = 0
+            while (cur != null && guard++ < 16) {
+                val pm = (keyTransformAt(cur, frame) ?: Transform()).matrix()
+                if (m == null) m = pm else m.postConcat(pm)
+                val pid = cur.parentId
+                cur = layers.firstOrNull { it.id == pid }
+            }
+            return m
+        }
+
+        /** Видим ли слой с учётом папок. */
+        fun effectivelyVisible(layers: List<Layer>, layer: Layer): Boolean {
+            if (!layer.visible) return false
+            var f = layers.firstOrNull { it.id == layer.folderId }
+            var guard = 0
+            while (f != null && guard++ < 16) {
+                if (!f.visible) return false
+                val fid = f.folderId
+                f = layers.firstOrNull { it.id == fid }
+            }
+            return true
+        }
 
         /** Матрица отображения слоя в кадре: локальные координаты → документ. */
         fun layerMatrix(project: Project, layer: Layer, frame: Int): Matrix {
             val m = (keyTransformAt(layer, frame) ?: Transform()).matrix()
+            parentMatrix(project.layers, layer, frame)?.let { m.postConcat(it) }
             Bones.bindMatrix(project, layer, frame)?.let { m.postConcat(it) }
             cameraMatrix(project, frame, layer.depth)?.let { m.postConcat(it) }
             return m
@@ -141,6 +219,7 @@ class Renderer {
                 if (k.tween == TweenType.SHAPE) elements = Interp.morphElements(k.elements, next.value.elements, k.ease(CurveProp.SHAPE, raw))
             }
             val m = tr.matrix()
+            parentMatrix(scope ?: project.layers, layer, frame)?.let { m.postConcat(it) }
             Bones.bindMatrix(project, layer, frame, scope)?.let { m.postConcat(it) }
             if (scope == null) cameraMatrix(project, frame, layer.depth)?.let { m.postConcat(it) }
             return Resolved(elements, m, tr.alpha, e.key)
@@ -174,7 +253,7 @@ class Renderer {
     /** Отрисовка набора слоёв (сцены или символа). */
     private fun drawLayerList(c: Canvas, p: Project, layers: List<Layer>, frame: Int, opt: FrameOptions, scope: List<Layer>?) {
         for (layer in layers) {
-            if (layer.type != LayerType.DRAWING || !layer.visible) continue
+            if (layer.type != LayerType.DRAWING || !effectivelyVisible(layers, layer)) continue
             if (opt.onlyLayerId != null && layer.id != opt.onlyLayerId) continue
             if (layer.guide && !opt.includeGuides) continue
             if (layer.isMask) {
@@ -193,6 +272,26 @@ class Renderer {
             c.restoreToCount(s2)
             c.restoreToCount(s1)
         }
+    }
+
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    private fun drawText(c: Canvas, e: TextElement) {
+        configureText(textPaint, e)
+        val s = c.save()
+        c.concat(e.matrix)
+        e.lines.forEachIndexed { i, line ->
+            val y = i * e.size * 1.2f
+            if (e.outline > 0f) {
+                textPaint.style = Paint.Style.STROKE; textPaint.strokeWidth = e.outline * 2
+                textPaint.color = e.outlineColor; textPaint.alpha = (Color.alpha(e.outlineColor) * e.alpha).toInt().coerceIn(0, 255)
+                c.drawText(line, 0f, y, textPaint)
+            }
+            textPaint.style = Paint.Style.FILL
+            textPaint.color = e.color; textPaint.alpha = (Color.alpha(e.color) * e.alpha).toInt().coerceIn(0, 255)
+            c.drawText(line, 0f, y, textPaint)
+        }
+        c.restoreToCount(s)
     }
 
     /** Экземпляр символа: кадр символа по локальному времени ключа, цветовой эффект, вложенность до 6 уровней. */
@@ -297,6 +396,7 @@ class Renderer {
                 c.drawPath(path, paint)
             }
             is InstanceElement -> drawInstance(c, e)
+            is TextElement -> drawText(c, e)
             is BitmapElement -> {
                 bmpPaint.alpha = (255 * e.alpha).toInt().coerceIn(0, 255)
                 c.drawBitmap(e.bitmap, e.matrix, bmpPaint)

@@ -12,8 +12,8 @@ android {
         applicationId = "com.animora.studio"
         minSdk = 29
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.4.0"
+        versionCode = 9
+        versionName = "1.5.0"
     }
     buildTypes {
         release {

@@ -24,6 +24,9 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
@@ -77,6 +80,7 @@ fun LayersPanel(ctl: EditorController, onImport: () -> Unit, onImportAudio: () -
         Row(verticalAlignment = Alignment.CenterVertically) {
             Spacer(Modifier.weight(1f))
             IconBtn(Icons.Filled.Add, "Слой рисования") { ctl.addLayer(LayerType.DRAWING) }
+            IconBtn(Icons.Filled.CreateNewFolder, "Папка") { ctl.addFolder() }
             IconBtn(Icons.Filled.AccountTree, "Слой костей", tint = Pal.accent2) { ctl.addLayer(LayerType.BONES) }
             IconBtn(Icons.Filled.Image, "Импорт изображения", onClick = onImport)
         }
@@ -86,7 +90,7 @@ fun LayersPanel(ctl: EditorController, onImport: () -> Unit, onImportAudio: () -
             IconBtn(Icons.Filled.Videocam, "Камера", tint = Pal.accent2) { ctl.addLayer(LayerType.CAMERA) }
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            p.layers.reversed().forEach { l -> LayerRow(ctl, l) }
+            ctl.displayLayers().forEach { (l, indent) -> LayerRow(ctl, l, indent) }
         }
         HorizontalDivider(color = Pal.line)
         ctl.activeLayer?.let { LayerProps(ctl, it, onLipSync) }
@@ -94,7 +98,7 @@ fun LayersPanel(ctl: EditorController, onImport: () -> Unit, onImportAudio: () -
 }
 
 @Composable
-private fun LayerRow(ctl: EditorController, l: Layer) {
+private fun LayerRow(ctl: EditorController, l: Layer, indent: Int = 0) {
     ctl.version
     val active = l.id == ctl.activeLayerId
     Row(
@@ -102,7 +106,7 @@ private fun LayerRow(ctl: EditorController, l: Layer) {
             .background(if (active) Pal.accent.copy(alpha = 0.25f) else Pal.panel2)
             .then(if (active) Modifier.border(1.dp, Pal.accent, RoundedCornerShape(8.dp)) else Modifier)
             .clickable { ctl.selectLayer(l.id) }
-            .padding(horizontal = 6.dp),
+            .padding(start = (6 + indent * 12).dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(Modifier.width(4.dp).height(24.dp).background(Color(l.color), RoundedCornerShape(2.dp)))
@@ -112,6 +116,10 @@ private fun LayerRow(ctl: EditorController, l: Layer) {
             LayerType.AUDIO -> Icon(Icons.Filled.MusicNote, null, Modifier.size(16.dp), tint = Pal.shape)
             LayerType.CAMERA -> Icon(Icons.Filled.Videocam, null, Modifier.size(16.dp), tint = Pal.accent2)
             LayerType.DRAWING -> if (l.isMask) Icon(Icons.Filled.TheaterComedy, null, Modifier.size(16.dp), tint = Color(0xFF4FC3F7))
+            LayerType.FOLDER -> Icon(
+                if (l.collapsed) Icons.Filled.Folder else Icons.Filled.FolderOpen, "Свернуть",
+                Modifier.size(20.dp).clickable { ctl.updateLayer(l.id) { it.collapsed = !it.collapsed } }, tint = Pal.dim
+            )
         }
         Column(Modifier.weight(1f).padding(start = 4.dp)) {
             Text(l.name, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -196,6 +204,7 @@ private fun LayerProps(ctl: EditorController, l: Layer, onLipSync: () -> Unit) {
                 }
                 if (masks.isEmpty()) Text("Сделайте другой слой маской, чтобы выбрать его здесь.", fontSize = 10.sp, color = Pal.dim)
             }
+            ParentAndFolder(ctl, l)
             if (ctl.cameraLayer() != null) {
                 SectionTitle(if (l.depth < 0) "Камера: слой закреплён на экране" else "Глубина для камеры: ${"%.1f".format(l.depth)} (0 — обычно, больше — дальше)")
                 Slider(l.depth.coerceAtLeast(0f), { v -> ctl.updateLayer(l.id, "depth") { it.depth = (v * 10).toInt() / 10f } }, valueRange = 0f..5f, enabled = l.depth >= 0)
@@ -204,6 +213,9 @@ private fun LayerProps(ctl: EditorController, l: Layer, onLipSync: () -> Unit) {
                     Switch(l.depth < 0, { v -> ctl.updateLayer(l.id) { it.depth = if (v) -1f else 0f } })
                 }
             }
+        } else if (l.type == LayerType.FOLDER) {
+            Text("Скрытие и блокировка папки действуют на все слои внутри. Слой кладётся в папку в его свойствах.", fontSize = 11.sp, color = Pal.dim)
+            ParentAndFolder(ctl, l, parentAllowed = false)
         } else if (l.type == LayerType.AUDIO) {
             AudioProps(ctl, l, onLipSync)
         } else if (l.type == LayerType.CAMERA) {
@@ -335,3 +347,30 @@ private fun symbolThumb(ctl: EditorController, sym: com.animora.studio.model.Sym
     r.drawElement(c, com.animora.studio.model.InstanceElement(sym.id, m, com.animora.studio.model.LoopMode.SINGLE))
     bmp
 }.getOrNull()
+
+@Composable
+private fun ParentAndFolder(ctl: EditorController, l: Layer, parentAllowed: Boolean = true) {
+    var parentMenu by remember { mutableStateOf(false) }
+    var folderMenu by remember { mutableStateOf(false) }
+    val p = ctl.project
+    Row {
+        if (parentAllowed) Box {
+            SmallBtn("Родитель: ${p.layer(l.parentId)?.name ?: "нет"}") { parentMenu = true }
+            DropdownMenu(parentMenu, { parentMenu = false }) {
+                DropdownMenuItem(text = { Text("Без родителя") }, onClick = { ctl.setParent(l.id, null); parentMenu = false })
+                p.layers.filter { it.id != l.id && it.type == LayerType.DRAWING }.forEach { o ->
+                    DropdownMenuItem(text = { Text(o.name) }, onClick = { ctl.setParent(l.id, o.id); parentMenu = false })
+                }
+            }
+        }
+        val folders = p.layers.filter { it.type == LayerType.FOLDER && it.id != l.id }
+        if (folders.isNotEmpty()) Box {
+            SmallBtn("Папка: ${p.layer(l.folderId)?.name ?: "нет"}") { folderMenu = true }
+            DropdownMenu(folderMenu, { folderMenu = false }) {
+                DropdownMenuItem(text = { Text("Вне папки") }, onClick = { ctl.setFolder(l.id, null); folderMenu = false })
+                folders.forEach { f -> DropdownMenuItem(text = { Text(f.name) }, onClick = { ctl.setFolder(l.id, f.id); folderMenu = false }) }
+            }
+        }
+    }
+    if (parentAllowed && l.parentId != null) Text("Слой повторяет движение, поворот и масштаб родителя (твины родителя).", fontSize = 10.sp, color = Pal.dim)
+}

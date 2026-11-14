@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import com.animora.studio.model.BitmapElement
 import com.animora.studio.model.ColorEffect
 import com.animora.studio.model.InstanceElement
+import com.animora.studio.model.TextElement
 import com.animora.studio.model.StrokeElement
 import com.animora.studio.model.lerp
 import kotlin.math.abs
@@ -146,6 +147,8 @@ object Interp {
         val out = ArrayList<Element>()
         a.filterIsInstance<BitmapElement>().forEach { out.add(it.withAlpha(it.alpha * (1f - tc))) }
         b.filterIsInstance<BitmapElement>().forEach { out.add(it.withAlpha(it.alpha * tc)) }
+        a.filterIsInstance<TextElement>().forEach { out.add(it.copyWith(alpha = it.alpha * (1f - tc))) }
+        b.filterIsInstance<TextElement>().forEach { out.add(it.copyWith(alpha = it.alpha * tc)) }
         // экземпляры символов: одинаковые пары — плавный переход матрицы и эффекта, иначе — растворение
         val ia = a.filterIsInstance<InstanceElement>(); val ib = b.filterIsInstance<InstanceElement>()
         if (ia.size == ib.size && ia.indices.all { ia[it].symbolId == ib[it].symbolId }) {

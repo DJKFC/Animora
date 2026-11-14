@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -102,7 +103,7 @@ import com.animora.studio.ui.VerticalSlider
 import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
-enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES, LIPSYNC, INSTANCE }
+enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES, LIPSYNC, INSTANCE, TEXT }
 
 @Composable
 fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
@@ -208,6 +209,11 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
         if (!focus && !UiPrefs.timelineTop) timeline()
     }
 
+    if (ctl.textRequest != null) TextEntryDialog("", onDone = { ctl.addText(it) }, onCancel = { ctl.textRequest = null })
+    if (ctl.editTextRequested) ctl.selectedText()?.let { te ->
+        TextEntryDialog(te.text, onDone = { v -> ctl.updateText { it.copyWith(text = v) }; ctl.editTextRequested = false }, onCancel = { ctl.editTextRequested = false })
+    } ?: run { if (ctl.editTextRequested) ctl.editTextRequested = false }
+
     when (dialog) {
         Dlg.COLOR -> ColorPickerDialog(
             initial = ctl.color, palette = ctl.project.palette.toList(), recent = ctl.recentColors.toList(),
@@ -224,6 +230,7 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
         Dlg.CURVES -> CurveEditorDialog(ctl) { dialog = null }
         Dlg.LIPSYNC -> LipSyncDialog(ctl) { dialog = null }
         Dlg.INSTANCE -> InstanceDialog(ctl) { dialog = null }
+        Dlg.TEXT -> {}
         null -> {}
     }
 }
@@ -323,6 +330,7 @@ fun toolIcon(t: Tool): ImageVector = when (t) {
     Tool.BONE -> Icons.Filled.AccountTree
     Tool.POSE -> Icons.Filled.AccessibilityNew
     Tool.HAND -> Icons.Filled.PanTool
+    Tool.TEXT -> Icons.Filled.TextFields
 }
 
 @Composable
@@ -441,6 +449,13 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                         Slider(ct.rot.coerceIn(-180f, 180f), { v -> ctl.editCamera("camrot") { it.copy(rot = v) } }, valueRange = -180f..180f, modifier = Modifier.width(110.dp))
                         SmallBtn("Сброс") { ctl.editCamera("camreset${System.nanoTime()}") { com.animora.studio.model.Transform() } }
                     } else if (t == null) Text("Нет ключа на слое", fontSize = 12.sp, color = Pal.dim) else {
+                        val hk = ctl.heldKey()?.second
+                        SmallBtn(if (ctl.drawingGuide) "Рисуйте путь…" else "〰 Траектория", selected = ctl.drawingGuide) { ctl.drawingGuide = !ctl.drawingGuide }
+                        if (hk?.guide != null) {
+                            SmallBtn("По пути", selected = hk.orientToPath) { ctl.toggleOrient() }
+                            SmallBtn("Убрать путь") { ctl.clearGuide() }
+                        }
+                        if (ctl.frameSel != null) Text(" ⧉ диапазон ", fontSize = 12.sp, color = Pal.accent2)
                         Text("Поворот ${t.rot.toInt()}°", fontSize = 12.sp, color = Pal.dim)
                         Slider(t.rot.coerceIn(-360f, 360f), { v -> ctl.editKeyTransform("rot") { it.copy(rot = v) } }, valueRange = -360f..360f, modifier = Modifier.width(110.dp))
                         Text("Масштаб ${(t.sx * 100).toInt()}%", fontSize = 12.sp, color = Pal.dim)
@@ -463,6 +478,25 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                 }
                 Tool.EYEDROPPER -> Text("Коснитесь цвета на холсте (кнопка 2 стилуса — тоже пипетка)", fontSize = 12.sp, color = Pal.dim)
                 Tool.HAND -> Text("Сдвиг одним пальцем · масштаб и поворот двумя", fontSize = 12.sp, color = Pal.dim)
+                Tool.TEXT -> {
+                    val sel = ctl.selectedText()
+                    fun applySel(f: (com.animora.studio.model.TextElement) -> com.animora.studio.model.TextElement) { if (sel != null) ctl.updateText(f) }
+                    Text(if (sel != null) "Текст выделен  " else "Коснитесь холста  ", fontSize = 12.sp, color = Pal.dim)
+                    if (sel != null) SmallBtn("✎ Изменить текст") { ctl.editTextRequested = true }
+                    Text("Размер ${(sel?.size ?: ctl.textSize).toInt()}", fontSize = 12.sp, color = Pal.dim)
+                    Slider((sel?.size ?: ctl.textSize).coerceIn(8f, 400f), { v -> ctl.textSize = v; applySel { it.copyWith(size = v) } }, valueRange = 8f..400f, modifier = Modifier.width(110.dp))
+                    com.animora.studio.model.TextFont.entries.forEach { f ->
+                        SmallBtn(f.title, selected = (sel?.font ?: ctl.textFont) == f) { ctl.textFont = f; applySel { it.copyWith(font = f) } }
+                    }
+                    SmallBtn("Ж", selected = sel?.bold ?: ctl.textBold) { val v = !(sel?.bold ?: ctl.textBold); ctl.textBold = v; applySel { it.copyWith(bold = v) } }
+                    SmallBtn("К", selected = sel?.italic ?: ctl.textItalic) { val v = !(sel?.italic ?: ctl.textItalic); ctl.textItalic = v; applySel { it.copyWith(italic = v) } }
+                    com.animora.studio.model.TextAlign.entries.forEach { a ->
+                        SmallBtn(a.title, selected = (sel?.align ?: ctl.textAlign) == a) { ctl.textAlign = a; applySel { it.copyWith(align = a) } }
+                    }
+                    Text("Обводка", fontSize = 12.sp, color = Pal.dim)
+                    Slider((sel?.outline ?: ctl.textOutline).coerceIn(0f, 20f), { v -> ctl.textOutline = v; applySel { it.copyWith(outline = v) } }, valueRange = 0f..20f, modifier = Modifier.width(90.dp))
+                    if (sel != null) SmallBtn("Цвет кисти") { applySel { it.copyWith(color = ctl.color) } }
+                }
             }
         }
     }
@@ -470,3 +504,20 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
 
 @Suppress("unused")
 private val dotShape = CircleShape
+
+@Composable
+private fun TextEntryDialog(initial: String, onDone: (String) -> Unit, onCancel: () -> Unit) {
+    var t by remember { mutableStateOf(initial) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(if (initial.isEmpty()) "Новый текст" else "Изменить текст") },
+        text = {
+            androidx.compose.material3.OutlinedTextField(
+                t, { t = it }, label = { Text("Текст (можно в несколько строк)") },
+                modifier = Modifier.fillMaxWidth().height(160.dp)
+            )
+        },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = { onDone(t) }) { Text("Готово") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onCancel) { Text("Отмена") } }
+    )
+}

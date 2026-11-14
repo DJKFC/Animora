@@ -137,6 +137,9 @@ object Serializer {
         l.bindLayer?.let { put("bindLayer", it) }
         l.bindBone?.let { put("bindBone", it) }
         if (l.isMask) put("isMask", true)
+        l.parentId?.let { put("parent", it) }
+        l.folderId?.let { put("folder", it) }
+        if (l.collapsed) put("collapsed", true)
         l.maskedBy?.let { put("maskedBy", it) }
         if (l.depth != 0f) put("depth", l.depth.toDouble())
         l.audio?.let { c ->
@@ -150,6 +153,7 @@ object Serializer {
                 put(JSONObject().apply {
                     put("f", f); put("tween", k.tween.name); put("easing", k.easing.name); put("label", k.label)
                     k.curve?.let { put("curve", it.toJson()) }
+                    k.guide?.let { g -> put("guide", JSONArray().apply { g.forEach { v -> put(v.toDouble()) } }); if (k.orientToPath) put("orient", true) }
                     if (k.separateCurves) put("sepCurves", true)
                     if (k.propCurves.isNotEmpty()) put("propCurves", JSONObject().apply { k.propCurves.forEach { (pr, c) -> put(pr.name, c.toJson()) } })
                     val t = k.transform
@@ -161,6 +165,11 @@ object Serializer {
                                     put("t", "s"); put("c", e.color); put("sz", e.size.toDouble())
                                     put("k", e.kind.name); put("o", e.opacity.toDouble()); put("p", floatsToB64(e.pts))
                                     e.tipId?.let { put("tip", it) }
+                                })
+                                is TextElement -> put(JSONObject().apply {
+                                    put("t", "x"); put("text", e.text); put("sz", e.size.toDouble()); put("c", e.color)
+                                    put("font", e.font.name); put("b", e.bold); put("it", e.italic); put("al", e.align.name)
+                                    put("m", matrixToJson(e.matrix)); put("a", e.alpha.toDouble()); put("ol", e.outline.toDouble()); put("olc", e.outlineColor)
                                 })
                                 is InstanceElement -> put(JSONObject().apply {
                                     put("t", "i"); put("sym", e.symbolId); put("m", matrixToJson(e.matrix))
@@ -240,6 +249,9 @@ object Serializer {
             bindLayer = if (o.has("bindLayer")) o.getString("bindLayer") else null,
             bindBone = if (o.has("bindBone")) o.getString("bindBone") else null,
             isMask = o.optBoolean("isMask", false),
+            parentId = if (o.has("parent")) o.getString("parent") else null,
+            folderId = if (o.has("folder")) o.getString("folder") else null,
+            collapsed = o.optBoolean("collapsed", false),
             maskedBy = if (o.has("maskedBy")) o.getString("maskedBy") else null,
             depth = o.optDouble("depth", 0.0).toFloat(),
             audio = o.optJSONObject("audio")?.let { a ->
@@ -260,7 +272,9 @@ object Serializer {
                 transform = Transform(t(0), t(1), t(2), t(3), t(4), t(5), t(6), t(7)),
                 label = k.optString("label", ""),
                 curve = k.optJSONArray("curve")?.let { EaseCurve.fromJson(it) },
-                separateCurves = k.optBoolean("sepCurves", false)
+                separateCurves = k.optBoolean("sepCurves", false),
+                guide = k.optJSONArray("guide")?.let { a -> FloatArray(a.length()) { a.getDouble(it).toFloat() } },
+                orientToPath = k.optBoolean("orient", false)
             )
             k.optJSONObject("propCurves")?.let { pc ->
                 pc.keys().forEach { name ->
@@ -281,6 +295,14 @@ object Serializer {
                             if (e.has("tip")) e.getString("tip") else null
                         )
                     )
+                    "x" -> kf.elements.add(TextElement(
+                        e.getString("text"), e.getDouble("sz").toFloat(), e.getInt("c"),
+                        runCatching { TextFont.valueOf(e.getString("font")) }.getOrDefault(TextFont.SANS),
+                        e.optBoolean("b", false), e.optBoolean("it", false),
+                        runCatching { TextAlign.valueOf(e.getString("al")) }.getOrDefault(TextAlign.LEFT),
+                        jsonToMatrix(e.getJSONArray("m")), e.optDouble("a", 1.0).toFloat(),
+                        e.optDouble("ol", 0.0).toFloat(), e.optInt("olc", 0xFF000000.toInt())
+                    ))
                     "i" -> {
                         val fx = e.optJSONArray("fx")
                         kf.elements.add(InstanceElement(

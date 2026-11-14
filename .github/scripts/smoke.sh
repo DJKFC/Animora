@@ -123,5 +123,22 @@ tap "Воспроизвести"; sleep 3; tap "Воспроизвести"; sle
 crashcheck symbols
 adb shell input keyevent 4; sleep 4
 crashcheck symbols_back
+# этап 3: текст, папки, выделение кадров, траектория
+tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
+tap "Текст"; sleep 1
+adb shell input tap $((W/2)) $((H*4/10)); sleep 2
+tap "Текст (можно в несколько строк)"; sleep 1; adb shell input text "Animora"; sleep 1
+tap "Готово"; sleep 2; shot text
+tap "Папка"; sleep 2
+tap "⧉ Выделить"; sleep 1
+adb shell input swipe $((W*5/10)) $((H*92/100)) $((W*7/10)) $((H*92/100)) 500; sleep 2
+tap "×2"; sleep 1; tap "1▶"; sleep 1; shot frames_sel
+tap "⧉ Выделение: вкл"; sleep 1
+tap "Трансформация ключа"; sleep 1; tap "〰 Траектория"; sleep 1
+adb shell input swipe $((W*3/10)) $((H*5/10)) $((W*7/10)) $((H*3/10)) 600; sleep 2
+tap "Воспроизвести"; sleep 3; tap "Воспроизвести"; sleep 1; shot guide
+crashcheck stage3
+adb shell input keyevent 4; sleep 4
+crashcheck stage3_back
 adb logcat -d > out/logcat.txt
 exit 0

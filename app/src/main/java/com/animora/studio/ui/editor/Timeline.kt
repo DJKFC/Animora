@@ -4,6 +4,7 @@ import android.graphics.Paint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.Orientation
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Videocam
@@ -82,7 +84,8 @@ private val HEAD_H = 22.dp
 fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
     ctl.version
     val p = ctl.project
-    val layers = p.layers.reversed()
+    val display = ctl.displayLayers()
+    val layers = display.map { it.first }
     val rows = layers.size
     val vs = rememberScrollState()
     val density = LocalDensity.current
@@ -123,13 +126,17 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
                     Text("  Слои", fontSize = 11.sp, color = Pal.dim)
                 }
                 Column(Modifier.verticalScroll(vs)) {
-                    layers.forEach { l ->
+                    display.forEach { (l, indent) ->
                         val active = l.id == ctl.activeLayerId
                         Row(
                             Modifier.height(ROW_H).fillMaxWidth().background(if (active) Pal.accent.copy(alpha = 0.22f) else Color.Transparent)
-                                .clickable { ctl.selectLayer(l.id) }.padding(start = 4.dp),
+                                .clickable { ctl.selectLayer(l.id) }.padding(start = (4 + indent * 10).dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            if (l.type == LayerType.FOLDER) Text(
+                                if (l.collapsed) "▸" else "▾", fontSize = 13.sp, color = Pal.dim,
+                                modifier = Modifier.clickable { ctl.updateLayer(l.id) { it.collapsed = !it.collapsed } }.padding(end = 2.dp)
+                            )
                             Box(Modifier.width(4.dp).height(18.dp).background(Color(l.color)))
                             Icon(
                                 if (l.visible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "Видимость",
@@ -140,6 +147,7 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
                                 LayerType.BONES -> Icon(Icons.Filled.AccountTree, null, Modifier.size(13.dp), tint = Pal.accent2)
                                 LayerType.AUDIO -> Icon(Icons.Filled.MusicNote, null, Modifier.size(13.dp), tint = Pal.shape)
                                 LayerType.CAMERA -> Icon(Icons.Filled.Videocam, null, Modifier.size(13.dp), tint = Pal.accent2)
+                                LayerType.FOLDER -> Icon(Icons.Filled.Folder, null, Modifier.size(13.dp), tint = Pal.dim)
                                 else -> {}
                             }
                             Text(l.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (l.guide) Pal.dim else Pal.text)
@@ -214,14 +222,38 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, sx: () -> Float, 
     val scroll by rememberUpdatedState(sx)
     ctl.version
     val p = ctl.project
-    val layers = p.layers.reversed()
+    val layers = ctl.displayLayers().map { it.first }
     val density = LocalDensity.current
     val rowPx = with(density) { ROW_H.toPx() }
     val layersNow by rememberUpdatedState(layers)
     val c by rememberUpdatedState(ctl)
     val more by rememberUpdatedState(onMore)
     Canvas(
-        modifier.pointerInput(cellPx, rowPx) {
+        modifier.pointerInput(cellPx, rowPx, c.frameSelectMode) {
+            if (!c.frameSelectMode) return@pointerInput
+            // режим выделения: тянем — выделить прямоугольник (слои × кадры); тянем выделенное — перенести
+            var startF = 0; var startR = 0; var moving = false; var lastDelta = 0
+            detectDragGestures(
+                onDragStart = { o ->
+                    startF = ((o.x + scroll()) / cellPx).toInt(); startR = (o.y / rowPx).toInt()
+                    val fs = c.frameSel
+                    val lid = layersNow.getOrNull(startR)?.id
+                    moving = fs != null && lid != null && lid in fs.layers && startF in fs.from..fs.to
+                    lastDelta = 0
+                    if (!moving) layersNow.getOrNull(startR)?.let { c.selectFrames(setOf(it.id), startF, startF) }
+                },
+                onDragEnd = { if (moving && lastDelta != 0) c.moveSelectedFrames(lastDelta); moving = false }
+            ) { ch, _ ->
+                ch.consume()
+                val f = ((ch.position.x + scroll()) / cellPx).toInt()
+                val r = (ch.position.y / rowPx).toInt().coerceIn(0, max(0, layersNow.size - 1))
+                if (moving) lastDelta = f - startF
+                else {
+                    val ids = layersNow.subList(min(startR, r).coerceIn(0, layersNow.size), (max(startR, r) + 1).coerceAtMost(layersNow.size)).map { it.id }.toSet()
+                    c.selectFrames(ids, startF, f)
+                }
+            }
+        }.pointerInput(cellPx, rowPx) {
             detectTapGestures(
                 onTap = { o ->
                     val r = (o.y / rowPx).toInt()
@@ -322,6 +354,14 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, sx: () -> Float, 
                 for (i in 0 until keys.size - 1) drawLine(Pal.accent2.copy(alpha = 0.5f), Offset(keys[i] * cellPx + cellPx, cy), Offset(keys[i + 1] * cellPx, cy), 2f)
             }
         }
+        ctl.frameSel?.let { fs ->
+            layers.forEachIndexed { r, l ->
+                if (l.id in fs.layers) {
+                    drawRect(Pal.accent2.copy(alpha = 0.22f), Offset(fs.from * cellPx, r * rowPx), Size((fs.to - fs.from + 1) * cellPx, rowPx))
+                    drawRect(Pal.accent2, Offset(fs.from * cellPx, r * rowPx), Size((fs.to - fs.from + 1) * cellPx, rowPx), style = Stroke(2f))
+                }
+            }
+        }
         val px = ctl.frame * cellPx
         drawRect(Pal.pink.copy(alpha = 0.16f), Offset(px, 0f), Size(cellPx, size.height))
         drawLine(Pal.pink, Offset(px + cellPx / 2, 0f), Offset(px + cellPx / 2, size.height), 2f)
@@ -340,6 +380,22 @@ private fun TimelineControls(ctl: EditorController, onMore: () -> Unit, onCurves
         Modifier.fillMaxWidth().height(44.dp).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        SmallBtn(if (ctl.frameSelectMode) "⧉ Выделение: вкл" else "⧉ Выделить", selected = ctl.frameSelectMode) {
+            ctl.frameSelectMode = !ctl.frameSelectMode
+            if (!ctl.frameSelectMode) ctl.frameSel = null
+        }
+        if (ctl.frameSel != null) {
+            SmallBtn("◀1") { ctl.moveSelectedFrames(-1) }
+            SmallBtn("1▶") { ctl.moveSelectedFrames(1) }
+            SmallBtn("Копир.") { ctl.copySelectedFrames() }
+            SmallBtn("Вырез.") { ctl.copySelectedFrames(cut = true) }
+            SmallBtn("Удалить") { ctl.deleteSelectedKeys() }
+            SmallBtn("Обратно") { ctl.reverseSelectedFrames() }
+            SmallBtn("×2") { ctl.scaleSelectedFrames(2f) }
+            SmallBtn("×½") { ctl.scaleSelectedFrames(0.5f) }
+            SmallBtn("Снять") { ctl.frameSel = null }
+        }
+        SmallBtn("Вставить кадры") { ctl.pasteFrames() }
         IconBtn(Icons.Filled.SkipPrevious, "В начало") { ctl.stop(); ctl.seek(0) }
         IconBtn(Icons.Filled.FastRewind, "Предыдущий кадр") { ctl.stop(); ctl.seek(ctl.frame - 1) }
         IconBtn(Icons.Filled.FastForward, "Следующий кадр") { ctl.stop(); ctl.seek(ctl.frame + 1) }
