@@ -305,7 +305,13 @@ class Project(
     var created: Long = System.currentTimeMillis(),
     var modified: Long = System.currentTimeMillis(),
     /** Библиотека символов (клипов со своим таймлайном). */
-    val symbols: MutableList<Symbol> = mutableListOf()
+    val symbols: MutableList<Symbol> = mutableListOf(),
+    /** Направляющие: вертикальные (x) и горизонтальные (y), в координатах документа. */
+    val guidesX: MutableList<Float> = mutableListOf(),
+    val guidesY: MutableList<Float> = mutableListOf(),
+    /** Сцены. Текущая сцена «живёт» в layers/frameCount; остальные хранятся здесь. */
+    val scenes: MutableList<Scene> = mutableListOf(),
+    var currentScene: Int = 0
 ) {
     fun layer(id: String?): Layer? = if (id == null) null else layers.firstOrNull { it.id == id }
     fun symbol(id: String?): Symbol? = if (id == null) null else symbols.firstOrNull { it.id == id }
@@ -322,8 +328,15 @@ class Project(
     fun detachedCopy(): Project = Project(
         id, name, width, height, fps, frameCount, bgColor, bgType,
         layers.map { it.copy() }.toMutableList(), palette.toMutableList(), created, modified,
-        symbols.map { it.copy() }.toMutableList()
+        symbols.map { it.copy() }.toMutableList(), guidesX.toMutableList(), guidesY.toMutableList(),
+        scenes.map { it.copy() }.toMutableList(), currentScene
     )
+
+    /** Все сцены по порядку, где текущая — с «живыми» слоями. */
+    fun allScenes(): List<Scene> {
+        if (scenes.isEmpty()) return listOf(Scene(name = "Сцена 1", layers = layers, frameCount = frameCount))
+        return scenes.mapIndexed { i, sc -> if (i == currentScene) Scene(sc.id, sc.name, layers, frameCount) else sc }
+    }
 
     companion object {
         fun defaultPalette() = listOf(
@@ -525,4 +538,14 @@ class MeshBitmapElement(val bitmap: Bitmap, val meshW: Int, val meshH: Int, val 
         return RectF(l, t, r, b)
     }
     override fun transformed(m: Matrix) = MeshBitmapElement(bitmap, meshW, meshH, verts.copyOf().also { m.mapPoints(it) }, alpha)
+}
+
+/** Сцена — отдельный таймлайн; при экспорте сцены идут друг за другом. */
+class Scene(
+    val id: String = newId(),
+    var name: String,
+    val layers: MutableList<Layer> = mutableListOf(),
+    var frameCount: Int = 48
+) {
+    fun copy() = Scene(id, name, layers.map { it.copy() }.toMutableList(), frameCount)
 }

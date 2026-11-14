@@ -160,5 +160,19 @@ tap "Воспроизвести"; sleep 3; tap "Воспроизвести"; sle
 crashcheck stage4
 adb shell input keyevent 4; sleep 4
 crashcheck stage4_back
+# этап 5: линейки, выравнивание, сцены, импорт, экспорт SVG и спрайтов
+tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
+adb shell input swipe $((W*4/10)) $((H*4/10)) $((W*6/10)) $((H*5/10)) 400; sleep 1
+tap "Ещё"; sleep 2; tap "Линейки и направляющие"; sleep 2
+adb shell input keyevent 4; sleep 1; shot rulers
+tap "Лассо"; sleep 1; adb shell input tap $((W/2)) $((H*45/100)); sleep 2
+tap "Выровнять / размер…"; sleep 2; tap "↔ Центр"; sleep 1; tap "↕ Центр"; sleep 1; shot align; tap "Готово"; sleep 1
+tap "Ещё"; sleep 2; tap "Сцены (1)…"; sleep 2; tap "+ Сцена"; sleep 2; shot scenes; tap "Готово"; sleep 2
+adb shell input swipe $((W*4/10)) $((H*5/10)) $((W*6/10)) $((H*4/10)) 400; sleep 1
+tap "Ещё"; sleep 2; tap "Импорт (SVG, PSD, видео, звук…)"; sleep 2; shot import; tap "Закрыть"; sleep 1
+tap "Экспорт"; sleep 2; tap "Текущий кадр SVG (вектор)"; sleep 1; tap "Экспорт"; sleep 5; shot export_svg; tap "Закрыть"; sleep 2
+crashcheck stage5
+adb shell input keyevent 4; sleep 5
+crashcheck stage5_back
 adb logcat -d > out/logcat.txt
 exit 0

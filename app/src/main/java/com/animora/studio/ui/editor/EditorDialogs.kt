@@ -247,6 +247,7 @@ fun ExportDialog(ctl: EditorController, onDismiss: () -> Unit) {
     var transparent by remember { mutableStateOf(p.bgType == BgType.TRANSPARENT) }
     var pingPong by remember { mutableStateOf(false) }
     var guides by remember { mutableStateOf(false) }
+    var allScenes by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<Uri?>(null) }
     var resultMime by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -267,7 +268,7 @@ fun ExportDialog(ctl: EditorController, onDismiss: () -> Unit) {
                 val s = ExportSettings(
                     format, scale,
                     if (useRange) ctl.rangeFrom else 0, if (useRange) ctl.rangeTo else p.frameCount - 1,
-                    transparent, guides, 0, ctl.frame, pingPong
+                    transparent, guides, 0, ctl.frame, pingPong, allScenes
                 )
                 if (format == ExportFormat.PROJECT) ctl.saveAsync()
                 ctl.export(s) { uri, err -> result = uri; error = err; resultMime = format.mime }
@@ -291,6 +292,7 @@ fun ExportDialog(ctl: EditorController, onDismiss: () -> Unit) {
                     if (format != ExportFormat.MP4) SwitchRow("Прозрачный фон", transparent) { transparent = it }
                     if (format == ExportFormat.MP4 || format == ExportFormat.GIF) SwitchRow("Туда-обратно (пинг-понг)", pingPong) { pingPong = it }
                     SwitchRow("Включить направляющие слои", guides) { guides = it }
+                    if (ctl.sceneNames().size > 1 && format !in listOf(ExportFormat.FRAME, ExportFormat.SVG)) SwitchRow("Все сцены подряд (${ctl.sceneNames().size})", allScenes) { allScenes = it }
                 }
                 progress?.let {
                     Text("Экспорт… ${(it * 100).toInt()}%", fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))

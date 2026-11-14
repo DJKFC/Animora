@@ -44,6 +44,7 @@ import com.animora.studio.model.PathFillElement
 import com.animora.studio.model.WarpPin
 import com.animora.studio.model.InstanceElement
 import com.animora.studio.model.LoopMode
+import com.animora.studio.model.Scene
 import com.animora.studio.model.Symbol
 import com.animora.studio.model.SymbolRegistry
 import com.animora.studio.model.TextAlign
@@ -275,7 +276,7 @@ class EditorController(
         "$version|$frame|$onionEnabled|$onionPrev|$onionNext|$onionOpacity|$onionAllLayers|$onionKeysOnly|$onionTint|$activeLayerId|$playing"
 
     fun overlayKey(): String =
-        "${selection?.indices?.size}|$selectedBoneId|$selectedPin|${com.animora.studio.ui.UiPrefs.workspace}|$showGrid|$showSafeArea|$showBones|$flipView|$viewResetToken|$tool|$symmetry|$color"
+        "${selection?.indices?.size}|$selectedBoneId|$selectedPin|$showRulers|${project.guidesX.size}|${project.guidesY.size}|${com.animora.studio.ui.UiPrefs.workspace}|$showGrid|$showSafeArea|$showBones|$flipView|$viewResetToken|$tool|$symmetry|$color"
 
     // ---------------- история ----------------
     fun checkpoint() = history.checkpoint()
@@ -1061,8 +1062,11 @@ class EditorController(
         dragKind = kind
         dragOriginals = selection!!.indices.map { k.elements[it] }
         dragStart.set(x, y); dragCenter.set(b.centerX(), b.centerY())
+        dragStartBounds.set(b)
         return true
     }
+
+    private val dragStartBounds = RectF()
 
     private fun dragMatrix(x: Float, y: Float): Matrix {
         val t = Matrix()
@@ -1084,7 +1088,14 @@ class EditorController(
         val s = selection ?: return
         val k = selectionKey() ?: return
         val l = project.layer(s.layerId) ?: return
-        applyDocTransform(l, k, s.indices, dragOriginals, dragMatrix(x, y))
+        var tx = x; var ty = y
+        if (snapEnabled && dragKind == DragKind.MOVE) {
+            // привязка краёв/центра выделения к направляющим, сетке и краям кадра
+            val b = dragStartBounds; val dx = x - dragStart.x; val dy = y - dragStart.y
+            tx += snapDelta(floatArrayOf(b.left + dx, b.centerX() + dx, b.right + dx), true)
+            ty += snapDelta(floatArrayOf(b.top + dy, b.centerY() + dy, b.bottom + dy), false)
+        }
+        applyDocTransform(l, k, s.indices, dragOriginals, dragMatrix(tx, ty))
     }
 
     private fun applyDocTransform(l: Layer, k: Keyframe, idx: List<Int>, originals: List<Element>, t: Matrix) {
@@ -1521,6 +1532,263 @@ class EditorController(
             project.layers.add(idx, l)
             activeLayerId = l.id
             changed(); toast("Изображение добавлено как направляющий слой (не экспортируется)")
+        }
+    }
+
+    // ---------------- линейки, направляющие, привязка (этап 5) ----------------
+    var showRulers by mutableStateOf(false)
+    var snapEnabled by mutableStateOf(true)
+    /** Допуск привязки в координатах документа (выставляет холст по масштабу). */
+    var snapTol = 8f
+
+    private fun snapTargets(vertical: Boolean): List<Float> {
+        val size = if (vertical) project.width.toFloat() else project.height.toFloat()
+        val list = mutableListOf(0f, size / 2, size)
+        list.addAll(if (vertical) project.guidesX else project.guidesY)
+        if (showGrid) { val step = max(project.width, project.height) / 24f; var v = step; while (v < size) { list.add(v); v += step } }
+        return list
+    }
+
+    /** Сдвиг, который «прилепит» ближайшую из точек к цели (или 0). */
+    fun snapDelta(points: FloatArray, vertical: Boolean): Float {
+        var best = 0f; var bd = snapTol
+        val t = snapTargets(vertical)
+        for (p in points) for (g in t) { val d = g - p; if (kotlin.math.abs(d) < bd) { bd = kotlin.math.abs(d); best = d } }
+        return best
+    }
+
+    fun snapPoint(x: Float, y: Float): PointF =
+        if (!snapEnabled) PointF(x, y) else PointF(x + snapDelta(floatArrayOf(x), true), y + snapDelta(floatArrayOf(y), false))
+
+    fun addGuide(vertical: Boolean, pos: Float): Int {
+        val list = if (vertical) project.guidesX else project.guidesY
+        list.add(pos); dirty = true; changed(); return list.size - 1
+    }
+
+    fun moveGuide(vertical: Boolean, index: Int, pos: Float) {
+        val list = if (vertical) project.guidesX else project.guidesY
+        if (index in list.indices) { list[index] = pos; dirty = true }
+    }
+
+    fun removeGuide(vertical: Boolean, index: Int) {
+        val list = if (vertical) project.guidesX else project.guidesY
+        if (index in list.indices) { list.removeAt(index); changed() }
+    }
+
+    fun clearGuides() { project.guidesX.clear(); project.guidesY.clear(); changed() }
+
+    // --- выравнивание и точные размеры ---
+    enum class AlignOp { LEFT, HCENTER, RIGHT, TOP, VCENTER, BOTTOM, DIST_H, DIST_V }
+
+    /** Выровнять выделенные элементы: относительно кадра (toStage) или общей рамки выделения. */
+    fun align(op: AlignOp, toStage: Boolean) {
+        val s = selection ?: run { toast("Выделите элементы лассо"); return }
+        val k = selectionKey() ?: return
+        val l = project.layer(s.layerId) ?: return
+        val lm = Renderer.layerMatrix(project, l, frame)
+        val boxes = s.indices.map { i -> RectF(k.elements[i].bounds()).also { lm.mapRect(it) } }
+        val all = selectionBounds() ?: return
+        val ref = if (toStage || s.indices.size == 1) RectF(0f, 0f, project.width.toFloat(), project.height.toFloat()) else all
+        checkpoint()
+        val inv = Matrix(); lm.invert(inv)
+        fun move(i: Int, dx: Float, dy: Float) {
+            val m = Matrix(lm); m.postTranslate(dx, dy); m.postConcat(inv)
+            k.elements[s.indices[i]] = k.elements[s.indices[i]].transformed(m)
+        }
+        when (op) {
+            AlignOp.DIST_H, AlignOp.DIST_V -> {
+                if (boxes.size < 3) { toast("Для распределения нужно 3 и больше элементов"); history.dropLast(); return }
+                val order = boxes.indices.sortedBy { if (op == AlignOp.DIST_H) boxes[it].centerX() else boxes[it].centerY() }
+                val a = boxes[order.first()]; val b = boxes[order.last()]
+                val start = if (op == AlignOp.DIST_H) a.centerX() else a.centerY()
+                val end = if (op == AlignOp.DIST_H) b.centerX() else b.centerY()
+                order.forEachIndexed { j, i ->
+                    val target = start + (end - start) * j / (order.size - 1)
+                    if (op == AlignOp.DIST_H) move(i, target - boxes[i].centerX(), 0f) else move(i, 0f, target - boxes[i].centerY())
+                }
+            }
+            else -> boxes.forEachIndexed { i, b ->
+                when (op) {
+                    AlignOp.LEFT -> move(i, ref.left - b.left, 0f)
+                    AlignOp.HCENTER -> move(i, ref.centerX() - b.centerX(), 0f)
+                    AlignOp.RIGHT -> move(i, ref.right - b.right, 0f)
+                    AlignOp.TOP -> move(i, 0f, ref.top - b.top)
+                    AlignOp.VCENTER -> move(i, 0f, ref.centerY() - b.centerY())
+                    AlignOp.BOTTOM -> move(i, 0f, ref.bottom - b.bottom)
+                    else -> {}
+                }
+            }
+        }
+        changed()
+    }
+
+    /** Точные положение и размер рамки выделения (координаты кадра). */
+    fun setSelectionRect(x: Float, y: Float, w: Float, h: Float, keepRatio: Boolean) {
+        val b = selectionBounds() ?: return
+        if (b.width() <= 0f || b.height() <= 0f) return
+        var sx = w / b.width(); var sy = h / b.height()
+        if (keepRatio) { val f = if (kotlin.math.abs(sx - 1f) > kotlin.math.abs(sy - 1f)) sx else sy; sx = f; sy = f }
+        val m = Matrix().apply { setTranslate(-b.left, -b.top); postScale(sx, sy); postTranslate(x, y) }
+        transformSelection(m)
+    }
+
+    fun rotateSelection(deg: Float) {
+        val b = selectionBounds() ?: return
+        transformSelection(Matrix().apply { setRotate(deg, b.centerX(), b.centerY()) })
+    }
+
+    // ---------------- сцены ----------------
+    fun sceneNames(): List<String> = project.allScenes().map { it.name }
+
+    private fun storeCurrentScene() {
+        if (project.scenes.isEmpty()) project.scenes.add(Scene(name = "Сцена 1", frameCount = project.frameCount))
+        val sc = project.scenes[project.currentScene]
+        sc.layers.clear(); sc.layers.addAll(project.layers); sc.frameCount = project.frameCount
+    }
+
+    fun switchScene(index: Int) {
+        if (editStack.isNotEmpty()) { toast("Сначала выйдите из символа"); return }
+        if (project.scenes.isEmpty() || index == project.currentScene || index !in project.scenes.indices) return
+        stop(); storeCurrentScene()
+        project.currentScene = index
+        val sc = project.scenes[index]
+        project.layers.clear(); project.layers.addAll(sc.layers)
+        if (project.layers.isEmpty()) project.layers.add(Layer(name = "Слой 1").also { it.keyframes[0] = Keyframe() })
+        project.frameCount = sc.frameCount.coerceAtLeast(1)
+        frame = 0; activeLayerId = project.layers.lastOrNull()?.id; selection = null; frameSel = null
+        rangeTo = project.frameCount - 1
+        history.clear(); changed(); toast("Сцена «${sc.name}»")
+    }
+
+    fun addScene() {
+        if (editStack.isNotEmpty()) { toast("Сначала выйдите из символа"); return }
+        storeCurrentScene()
+        project.scenes.add(Scene(name = "Сцена ${project.scenes.size + 1}", frameCount = project.frameCount))
+        switchScene(project.scenes.size - 1)
+    }
+
+    fun duplicateScene() {
+        if (editStack.isNotEmpty()) return
+        storeCurrentScene()
+        val cur = project.scenes[project.currentScene]
+        project.scenes.add(project.currentScene + 1, Scene(name = cur.name + " копия", layers = cur.layers.map { it.copy(freshId = true) }.toMutableList(), frameCount = cur.frameCount))
+        switchScene(project.currentScene + 1)
+    }
+
+    fun renameScene(name: String) {
+        if (project.scenes.isEmpty()) project.scenes.add(Scene(name = name, frameCount = project.frameCount)) else project.scenes[project.currentScene].name = name
+        dirty = true; changed()
+    }
+
+    fun deleteScene() {
+        if (project.scenes.size <= 1) { toast("Это единственная сцена"); return }
+        val i = project.currentScene
+        project.scenes.removeAt(i)
+        project.currentScene = -1
+        val target = (i - 1).coerceAtLeast(0)
+        // загружаем соседнюю сцену без сохранения удалённой
+        project.currentScene = target
+        val sc = project.scenes[target]
+        project.layers.clear(); project.layers.addAll(sc.layers); project.frameCount = sc.frameCount.coerceAtLeast(1)
+        frame = 0; activeLayerId = project.layers.lastOrNull()?.id; selection = null
+        rangeTo = project.frameCount - 1
+        history.clear(); changed()
+    }
+
+    fun moveScene(delta: Int) {
+        if (project.scenes.size < 2) return
+        storeCurrentScene()
+        val i = project.currentScene; val j = (i + delta).coerceIn(0, project.scenes.size - 1)
+        if (i == j) return
+        val sc = project.scenes.removeAt(i); project.scenes.add(j, sc); project.currentScene = j
+        changed()
+    }
+
+    // ---------------- импорт SVG / PSD / видео ----------------
+    fun importSvg(uri: Uri) {
+        busy = "Импорт SVG…"
+        scope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching { com.animora.studio.engine.SvgImport.parse(appContext.contentResolver.openInputStream(uri)!!.use { it.readBytes().toString(Charsets.UTF_8) }) }
+            }
+            busy = null
+            res.onFailure { toast("SVG не прочитан: ${it.message}") }
+            res.onSuccess { (els, b) ->
+                if (els.isEmpty()) { toast("В SVG не найдено фигур"); return@launch }
+                checkpoint()
+                val s = min(project.width * 0.8f / max(1f, b.width()), project.height * 0.8f / max(1f, b.height()))
+                val m = Matrix().apply { setTranslate(-b.centerX(), -b.centerY()); postScale(s, s); postTranslate(project.width / 2f, project.height / 2f) }
+                val l = Layer(name = "SVG " + displayName(uri).substringBeforeLast('.').take(20))
+                l.keyframes[frame] = Keyframe(els.map { it.transformed(m) }.toMutableList())
+                project.layers.add(l); activeLayerId = l.id
+                changed(); toast("Импортировано элементов: ${els.size}")
+            }
+        }
+    }
+
+    fun importPsd(uri: Uri) {
+        busy = "Импорт PSD…"
+        scope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching { com.animora.studio.engine.PsdImport.parse(appContext.contentResolver.openInputStream(uri)!!.use { it.readBytes() }) }
+            }
+            busy = null
+            res.onFailure { toast("PSD не прочитан: ${it.message}") }
+            res.onSuccess { psd ->
+                checkpoint()
+                val s = min(project.width.toFloat() / psd.width, project.height.toFloat() / psd.height)
+                val ox = (project.width - psd.width * s) / 2; val oy = (project.height - psd.height * s) / 2
+                psd.layers.forEach { pl ->
+                    val l = Layer(name = pl.name.take(30), opacity = pl.opacity, visible = pl.visible)
+                    val m = Matrix().apply { setTranslate(pl.left.toFloat(), pl.top.toFloat()); postScale(s, s); postTranslate(ox, oy) }
+                    l.keyframes[frame] = Keyframe(mutableListOf(BitmapElement(pl.bitmap, m)))
+                    project.layers.add(l)
+                }
+                activeLayerId = project.layers.lastOrNull()?.id
+                changed(); toast("Импортировано слоёв из PSD: ${psd.layers.size}")
+            }
+        }
+    }
+
+    /** Видео для ротоскопии: кадры кладутся на направляющий слой (каждый кадр — свой ключ). */
+    fun importVideo(uri: Uri, maxFrames: Int = 240) {
+        busy = "Импорт видео…"
+        scope.launch {
+            val frames = withContext(Dispatchers.IO) {
+                runCatching {
+                    val r = android.media.MediaMetadataRetriever()
+                    r.setDataSource(appContext, uri)
+                    val dur = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                    val n = min(maxFrames.toLong(), dur * project.fps / 1000).toInt().coerceAtLeast(1)
+                    val maxSide = 1280
+                    val list = ArrayList<Bitmap>()
+                    for (i in 0 until n) {
+                        val us = i * 1_000_000L / project.fps
+                        val raw = r.getFrameAtTime(us, android.media.MediaMetadataRetriever.OPTION_CLOSEST) ?: continue
+                        val sc = min(1f, maxSide.toFloat() / max(raw.width, raw.height))
+                        list.add(if (sc < 1f) Bitmap.createScaledBitmap(raw, (raw.width * sc).toInt(), (raw.height * sc).toInt(), true) else raw)
+                        if (i % 10 == 0) withContext(Dispatchers.Main) { busy = "Импорт видео… ${i + 1}/$n" }
+                    }
+                    r.release()
+                    list
+                }
+            }
+            busy = null
+            frames.onFailure { toast("Видео не прочитано: ${it.message}") }
+            frames.onSuccess { list ->
+                if (list.isEmpty()) { toast("Не удалось получить кадры"); return@launch }
+                checkpoint()
+                val l = Layer(name = "Видео-референс", opacity = 0.5f, guide = true, locked = true, color = 0xFF90A4AE.toInt())
+                list.forEachIndexed { i, b ->
+                    val s = min(project.width.toFloat() / b.width, project.height.toFloat() / b.height)
+                    val m = Matrix().apply { setScale(s, s); postTranslate((project.width - b.width * s) / 2, (project.height - b.height * s) / 2) }
+                    l.keyframes[frame + i] = Keyframe(mutableListOf(BitmapElement(b, m)))
+                }
+                project.layers.add(0, l)
+                val end = frame + list.size
+                if (end > project.frameCount) { project.frameCount = end.coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1 }
+                changed(); toast("Видео: ${list.size} кадров на заблокированном направляющем слое")
+            }
         }
     }
 

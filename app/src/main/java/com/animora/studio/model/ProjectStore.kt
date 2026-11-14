@@ -116,6 +116,20 @@ object Serializer {
         put("created", p.created); put("modified", p.modified)
         put("palette", JSONArray().apply { p.palette.forEach { put(it) } })
         put("layers", JSONArray().apply { p.layers.forEach { put(layerToJson(it)) } })
+        if (p.guidesX.isNotEmpty()) put("guidesX", JSONArray().apply { p.guidesX.forEach { put(it.toDouble()) } })
+        if (p.guidesY.isNotEmpty()) put("guidesY", JSONArray().apply { p.guidesY.forEach { put(it.toDouble()) } })
+        if (p.scenes.isNotEmpty()) {
+            put("currentScene", p.currentScene)
+            put("scenes", JSONArray().apply {
+                p.scenes.forEachIndexed { i, sc ->
+                    put(JSONObject().apply {
+                        put("id", sc.id); put("name", sc.name)
+                        // текущая сцена хранится в основном списке layers — здесь только её имя
+                        if (i != p.currentScene) { put("frames", sc.frameCount); put("layers", JSONArray().apply { sc.layers.forEach { put(layerToJson(it)) } }) }
+                    })
+                }
+            })
+        }
         put("symbols", JSONArray().apply {
             p.symbols.forEach { sym ->
                 put(JSONObject().apply {
@@ -234,6 +248,17 @@ object Serializer {
             for (i in 0 until a.length()) runCatching {
                 val b = CustomBrush.fromJson(a.getJSONObject(i))
                 if (BrushRegistry.get(b.id) == null) BrushRegistry.register(b)
+            }
+        }
+        o.optJSONArray("guidesX")?.let { a -> for (i in 0 until a.length()) p.guidesX.add(a.getDouble(i).toFloat()) }
+        o.optJSONArray("guidesY")?.let { a -> for (i in 0 until a.length()) p.guidesY.add(a.getDouble(i).toFloat()) }
+        o.optJSONArray("scenes")?.let { arr ->
+            p.currentScene = o.optInt("currentScene", 0)
+            for (i in 0 until arr.length()) {
+                val so = arr.getJSONObject(i)
+                val sc = Scene(so.getString("id"), so.getString("name"), frameCount = so.optInt("frames", 48))
+                so.optJSONArray("layers")?.let { ls -> for (j in 0 until ls.length()) sc.layers.add(layerFromJson(ls.getJSONObject(j))) }
+                p.scenes.add(sc)
             }
         }
         o.optJSONArray("symbols")?.let { arr ->

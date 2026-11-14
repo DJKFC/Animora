@@ -106,7 +106,7 @@ import com.animora.studio.ui.VerticalSlider
 import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
-enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES, LIPSYNC, INSTANCE, TEXT }
+enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES, LIPSYNC, INSTANCE, TEXT, ALIGN, SCENES, IMPORT }
 
 @Composable
 fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
@@ -134,6 +134,9 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
 
     val timeline: @Composable () -> Unit = { Timeline(ctl, onMore = { dialog = Dlg.FRAME_MENU }, onCurves = { dialog = Dlg.CURVES }) }
     val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { ctl.importAudio(it) } }
+    val svgPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { ctl.importSvg(it) } }
+    val psdPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { ctl.importPsd(it) } }
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { ctl.importVideo(it) } }
     val layers: @Composable () -> Unit = {
         LayersPanel(ctl, onImport = { picker.launch("image/*") }, onImportAudio = { audioPicker.launch("audio/*") }, onLipSync = { dialog = Dlg.LIPSYNC })
     }
@@ -162,7 +165,7 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
                 }
                 if (!focus) ContextBar(
                     ctl, Modifier.align(if (UiPrefs.contextBarBottom) Alignment.BottomCenter else Alignment.TopCenter).padding(6.dp),
-                    onImportBrushes = importBrushes, onBrushDialog = { dialog = Dlg.BRUSH }, onInstance = { dialog = Dlg.INSTANCE }
+                    onImportBrushes = importBrushes, onBrushDialog = { dialog = Dlg.BRUSH }, onInstance = { dialog = Dlg.INSTANCE }, onAlign = { dialog = Dlg.ALIGN }
                 )
                 if (ctl.editStack.isNotEmpty()) Surface(
                     shape = RoundedCornerShape(16.dp), color = Pal.accent.copy(alpha = 0.9f),
@@ -234,6 +237,17 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
         Dlg.LIPSYNC -> LipSyncDialog(ctl) { dialog = null }
         Dlg.INSTANCE -> InstanceDialog(ctl) { dialog = null }
         Dlg.TEXT -> {}
+        Dlg.ALIGN -> AlignDialog(ctl) { dialog = null }
+        Dlg.SCENES -> ScenesDialog(ctl) { dialog = null }
+        Dlg.IMPORT -> ImportDialog(
+            onSvg = { svgPicker.launch(arrayOf("image/svg+xml", "text/xml", "*/*")); dialog = null },
+            onPsd = { psdPicker.launch(arrayOf("image/vnd.adobe.photoshop", "application/octet-stream", "*/*")); dialog = null },
+            onVideo = { videoPicker.launch("video/*"); dialog = null },
+            onImage = { picker.launch("image/*"); dialog = null },
+            onAudio = { audioPicker.launch("audio/*"); dialog = null },
+            onBrushes = { importBrushes(); dialog = null },
+            onDismiss = { dialog = null }
+        )
         null -> {}
     }
 }
@@ -304,6 +318,11 @@ private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (D
                     DropdownMenuItem(text = { Text("Настроить интерфейс…") }, onClick = { menu = false; onDialog(Dlg.UI) })
                     DropdownMenuItem(text = { Text("Кривые анимации…") }, onClick = { menu = false; onDialog(Dlg.CURVES) })
                     DropdownMenuItem(text = { Text("Lip-sync по звуку…") }, onClick = { menu = false; onDialog(Dlg.LIPSYNC) })
+                    DropdownMenuItem(text = { Text("Импорт (SVG, PSD, видео, звук…)") }, onClick = { menu = false; onDialog(Dlg.IMPORT) })
+                    DropdownMenuItem(text = { Text("Сцены (${ctl.sceneNames().size})…") }, onClick = { menu = false; onDialog(Dlg.SCENES) })
+                    CheckItem("Линейки и направляющие", ctl.showRulers) { ctl.showRulers = !ctl.showRulers }
+                    CheckItem("Привязка к направляющим и краям", ctl.snapEnabled) { ctl.snapEnabled = !ctl.snapEnabled }
+                    if (ctl.project.guidesX.isNotEmpty() || ctl.project.guidesY.isNotEmpty()) DropdownMenuItem(text = { Text("Убрать направляющие") }, onClick = { ctl.clearGuides(); menu = false })
                     CheckItem("Звук при перемотке", ctl.audioScrub) { ctl.audioScrub = !ctl.audioScrub }
                     if (!showLayers || !UiPrefs.visible(TopButton.LAYERS)) CheckItem("Панель слоёв", showLayers) { onToggleLayers() }
                     if (!UiPrefs.visible(TopButton.EXPORT)) DropdownMenuItem(text = { Text("Экспорт…") }, onClick = { menu = false; onDialog(Dlg.EXPORT) })
@@ -379,7 +398,7 @@ private fun BrushSliders(ctl: EditorController, modifier: Modifier) {
 }
 
 @Composable
-private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushes: () -> Unit, onBrushDialog: () -> Unit, onInstance: () -> Unit) {
+private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushes: () -> Unit, onBrushDialog: () -> Unit, onInstance: () -> Unit, onAlign: () -> Unit = {}) {
     ctl.version
     Surface(modifier, shape = RoundedCornerShape(14.dp), color = Pal.panel.copy(alpha = UiPrefs.panelAlpha), shadowElevation = 6.dp) {
         Row(
@@ -444,6 +463,7 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                         IconBtn(Icons.Filled.ContentCopy, "Копировать") { ctl.copySelection() }
                         IconBtn(Icons.Filled.ContentPaste, "Вставить") { ctl.paste() }
                         SmallBtn("Дубль") { ctl.duplicateSelection() }
+                        SmallBtn("Выровнять / размер…", onClick = onAlign)
                         SmallBtn("Сгладить") { ctl.smoothSelection() }
                         SmallBtn("Упростить") { ctl.simplifySelection() }
                         SmallBtn("Градиент") { ctl.applyGradientToSelection() }

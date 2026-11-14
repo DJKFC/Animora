@@ -23,7 +23,9 @@ enum class ExportFormat(val title: String, val ext: String, val mime: String) {
     GIF("Анимированный GIF", "gif", "image/gif"),
     PNG_ZIP("PNG-секвенция (ZIP)", "zip", "application/zip"),
     SPRITE("Спрайт-лист PNG", "png", "image/png"),
+    SPRITE_JSON("Спрайт-лист + JSON для игр (ZIP)", "zip", "application/zip"),
     FRAME("Текущий кадр PNG", "png", "image/png"),
+    SVG("Текущий кадр SVG (вектор)", "svg", "image/svg+xml"),
     PROJECT("Файл проекта (.json)", "json", "application/json")
 }
 
@@ -36,8 +38,13 @@ class ExportSettings(
     val includeGuides: Boolean = false,
     val loops: Int = 0,
     val currentFrame: Int = 0,
-    val pingPong: Boolean = false
+    val pingPong: Boolean = false,
+    /** Все сцены подряд (from/to игнорируются). */
+    val allScenes: Boolean = false
 )
+
+/** Кадр для экспорта: проект (сцена) и номер кадра в нём. */
+private class Src(val proj: Project, val f: Int)
 
 object Exporter {
 
@@ -46,18 +53,27 @@ object Exporter {
         val renderer = Renderer()
         val bgOn = !(s.transparent && s.format != ExportFormat.MP4) && project.bgType != BgType.TRANSPARENT
         val opt = FrameOptions(background = bgOn || (s.format == ExportFormat.MP4 && project.bgType != BgType.TRANSPARENT), includeGuides = s.includeGuides)
-        var frames = (s.from..s.to).toList()
+        val scenes = project.allScenes()
+        val sceneProjects = if (s.allScenes && scenes.size > 1) scenes.map { sc ->
+            Project(project.id, project.name, project.width, project.height, project.fps, sc.frameCount, project.bgColor, project.bgType,
+                sc.layers.toMutableList(), project.palette, project.created, project.modified, project.symbols)
+        } else null
+        var frames: List<Src> = sceneProjects?.flatMap { sp -> (0 until sp.frameCount).map { Src(sp, it) } } ?: (s.from..s.to).map { Src(project, it) }
         if (s.pingPong && frames.size > 2) frames = frames + frames.subList(1, frames.size - 1).reversed()
         val safeName = project.name.replace(Regex("[^\\p{L}\\p{N}_ -]"), "_").ifBlank { "animation" }
         val tmp = File(ctx.cacheDir, "export_${System.currentTimeMillis()}.${s.format.ext}")
-        fun render(f: Int, opaque: Boolean = false): Bitmap = renderer.renderBitmap(project, f, s.scale, opt, opaque)
+        fun render(src: Src, opaque: Boolean = false): Bitmap = renderer.renderBitmap(src.proj, src.f, s.scale, opt, opaque)
 
         when (s.format) {
             ExportFormat.MP4 -> {
                 val w = max(16, (project.width * s.scale).toInt() / 2 * 2)
                 val h = max(16, (project.height * s.scale).toInt() / 2 * 2)
                 // звук: сводим все звуковые слои на длину экспортируемого фрагмента (без пинг-понга)
-                val pcm = if (!s.pingPong && audioDir != null) com.animora.studio.engine.AudioMixer.mix(project, audioDir, s.from, frames.size) else null
+                val pcm = if (s.pingPong || audioDir == null) null else if (sceneProjects != null) {
+                    // звук всех сцен подряд
+                    val parts = sceneProjects.map { sp -> com.animora.studio.engine.AudioMixer.mix(sp, audioDir, 0, sp.frameCount) ?: ShortArray((sp.frameCount.toLong() * 44100 / sp.fps).toInt()) }
+                    if (parts.all { a -> a.all { it.toInt() == 0 } }) null else ShortArray(parts.sumOf { it.size }).also { out -> var o = 0; parts.forEach { part -> part.copyInto(out, o); o += part.size } }
+                } else com.animora.studio.engine.AudioMixer.mix(project, audioDir, s.from, frames.size)
                 val enc = VideoEncoder(tmp, w, h, project.fps, pcm)
                 frames.forEachIndexed { i, f ->
                     val b = render(f, true)
@@ -99,9 +115,33 @@ object Exporter {
                 }
                 tmp.outputStream().use { sheet.compress(Bitmap.CompressFormat.PNG, 100, it) }
             }
+            ExportFormat.SPRITE_JSON -> {
+                val n = frames.size
+                val cols = ceil(sqrt(n.toDouble())).toInt()
+                val rows = ceil(n / cols.toDouble()).toInt()
+                val fw = max(1, (project.width * s.scale).toInt()); val fh = max(1, (project.height * s.scale).toInt())
+                val sheet = Bitmap.createBitmap(fw * cols, fh * rows, Bitmap.Config.ARGB_8888)
+                val c = Canvas(sheet)
+                val json = StringBuilder("{\n  \"frames\": {\n")
+                frames.forEachIndexed { i, src ->
+                    val x = i % cols * fw; val y = i / cols * fh
+                    c.drawBitmap(render(src), x.toFloat(), y.toFloat(), null)
+                    json.append("    \"${safeName}_%04d.png\": { \"frame\": {\"x\":$x,\"y\":$y,\"w\":$fw,\"h\":$fh}, \"rotated\": false, \"trimmed\": false, \"sourceSize\": {\"w\":$fw,\"h\":$fh}, \"duration\": ${1000 / project.fps} }".format(i))
+                    json.append(if (i < n - 1) ",\n" else "\n")
+                    progress((i + 1f) / n)
+                }
+                json.append("  },\n  \"meta\": { \"app\": \"Animora\", \"image\": \"$safeName.png\", \"size\": {\"w\":${fw * cols},\"h\":${fh * rows}}, \"frameRate\": ${project.fps}, \"scale\": \"1\" }\n}\n")
+                ZipOutputStream(tmp.outputStream().buffered()).use { zip ->
+                    zip.putNextEntry(ZipEntry("$safeName.png")); sheet.compress(Bitmap.CompressFormat.PNG, 100, zip); zip.closeEntry()
+                    zip.putNextEntry(ZipEntry("$safeName.json")); zip.write(json.toString().toByteArray()); zip.closeEntry()
+                }
+            }
             ExportFormat.FRAME -> {
-                tmp.outputStream().use { render(s.currentFrame).compress(Bitmap.CompressFormat.PNG, 100, it) }
+                tmp.outputStream().use { render(Src(project, s.currentFrame)).compress(Bitmap.CompressFormat.PNG, 100, it) }
                 progress(1f)
+            }
+            ExportFormat.SVG -> {
+                tmp.writeText(com.animora.studio.engine.SvgExport.frame(project, s.currentFrame, s.includeGuides)); progress(1f)
             }
             ExportFormat.PROJECT -> {
                 tmp.writeText(projectJson ?: "{}"); progress(1f)

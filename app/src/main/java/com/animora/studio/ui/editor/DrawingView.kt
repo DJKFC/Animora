@@ -164,7 +164,9 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
         drawGuides(canvas, vs)
         if (ctl.showBones && !ctl.playing) drawBones(canvas, vs)
         drawSelection(canvas, vs)
+        drawDocGuides(canvas, vs)
         canvas.restore()
+        if (ctl.showRulers) drawRulers(canvas)
         drawHover(canvas)
         pickerColor?.let { c ->
             overlay.reset(); overlay.isAntiAlias = true
@@ -294,6 +296,76 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
         }
     }
 
+    // ---------------- линейки и направляющие ----------------
+    private var guideDragging = false
+    private var guideVertical = false
+    private var guideIndex = -1
+    private val rulerPx get() = 20f * density
+
+    private fun drawDocGuides(canvas: Canvas, vs: Float) {
+        if (project.guidesX.isEmpty() && project.guidesY.isEmpty()) return
+        overlay.reset(); overlay.isAntiAlias = true; overlay.style = Paint.Style.STROKE
+        overlay.strokeWidth = 1.2f / vs; overlay.color = 0xFF00E5FF.toInt()
+        val big = 100000f
+        project.guidesX.forEach { x -> canvas.drawLine(x, -big, x, big, overlay) }
+        project.guidesY.forEach { y -> canvas.drawLine(-big, y, big, y, overlay) }
+    }
+
+    private fun drawRulers(canvas: Canvas) {
+        val r = rulerPx
+        overlay.reset(); overlay.color = 0xF0201D2C.toInt()
+        canvas.drawRect(0f, 0f, width.toFloat(), r, overlay); canvas.drawRect(0f, 0f, r, height.toFloat(), overlay)
+        val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF9C97B5.toInt(); textSize = 9f * density }
+        overlay.color = 0xFF6D6787.toInt(); overlay.strokeWidth = 1f
+        // шаг делений подбирается под масштаб: 10/50/100/500… пикселей документа
+        val vs = viewScale
+        val steps = floatArrayOf(5f, 10f, 25f, 50f, 100f, 250f, 500f, 1000f, 2500f)
+        val step = steps.firstOrNull { it * vs >= 60f * density } ?: 5000f
+        val o = toDoc(r, r); val e = toDoc(width.toFloat(), height.toFloat())
+        val p = FloatArray(2)
+        var v = kotlin.math.floor(min(o[0], e[0]) / step) * step
+        while (v <= max(o[0], e[0])) {
+            p[0] = v; p[1] = 0f; view.mapPoints(p)
+            canvas.drawLine(p[0], r * 0.45f, p[0], r, overlay); canvas.drawText(v.toInt().toString(), p[0] + 2, r * 0.6f, tp)
+            var k = 1; while (k < 5) { p[0] = v + step * k / 5; p[1] = 0f; view.mapPoints(p); canvas.drawLine(p[0], r * 0.8f, p[0], r, overlay); k++ }
+            v += step
+        }
+        v = kotlin.math.floor(min(o[1], e[1]) / step) * step
+        while (v <= max(o[1], e[1])) {
+            p[0] = 0f; p[1] = v; view.mapPoints(p)
+            canvas.drawLine(r * 0.45f, p[1], r, p[1], overlay)
+            canvas.save(); canvas.rotate(-90f, r * 0.6f, p[1] - 2); canvas.drawText(v.toInt().toString(), r * 0.6f, p[1] - 2, tp); canvas.restore()
+            var k = 1; while (k < 5) { p[0] = 0f; p[1] = v + step * k / 5; view.mapPoints(p); canvas.drawLine(r * 0.8f, p[1], r, p[1], overlay); k++ }
+            v += step
+        }
+        tp.textSize = 8f * density
+        canvas.drawText("⟂", 4f * density, r * 0.75f, tp)
+    }
+
+    /** Касание линейки — новая направляющая; касание возле направляющей — перетаскивание. */
+    private fun beginGuideDrag(x: Float, y: Float): Boolean {
+        val r = rulerPx
+        val d = toDoc(x, y)
+        if (y < r && x > r) { guideVertical = false; guideIndex = ctl.addGuide(false, d[1]); return true }
+        if (x < r && y > r) { guideVertical = true; guideIndex = ctl.addGuide(true, d[0]); return true }
+        val tol = 12f * density / viewScale
+        project.guidesX.indexOfFirst { abs(it - d[0]) < tol }.takeIf { it >= 0 }?.let { guideVertical = true; guideIndex = it; return true }
+        project.guidesY.indexOfFirst { abs(it - d[1]) < tol }.takeIf { it >= 0 }?.let { guideVertical = false; guideIndex = it; return true }
+        return false
+    }
+
+    private fun updateGuideDrag(x: Float, y: Float) {
+        val d = toDoc(x, y)
+        ctl.moveGuide(guideVertical, guideIndex, if (guideVertical) d[0] else d[1])
+        invalidate()
+    }
+
+    private fun endGuideDrag(x: Float, y: Float) {
+        // утащили обратно на линейку — направляющая удаляется
+        if ((guideVertical && x < rulerPx) || (!guideVertical && y < rulerPx)) ctl.removeGuide(guideVertical, guideIndex)
+        invalidate()
+    }
+
     /** Траектория твина движения: точка на каждый кадр — видно расстановку и ускорение (как «тайминг-чарт»). */
     private fun drawMotionPath(canvas: Canvas, vs: Float) {
         ctl.guideDoc()?.let { g ->
@@ -353,6 +425,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
             MotionEvent.ACTION_DOWN -> {
                 requestUnbufferedDispatch(e)
                 hovering = false
+                ctl.snapTol = 10f * density / viewScale
+                if (ctl.showRulers && beginGuideDrag(e.x, e.y)) { mode = Mode.NONE; guideDragging = true; return true }
                 val tt = e.getToolType(0)
                 val stylus = tt == MotionEvent.TOOL_TYPE_STYLUS || tt == MotionEvent.TOOL_TYPE_ERASER
                 if (stylus && !ctl.stylusDetected) {
@@ -380,7 +454,7 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 }
                 beginGesture(e, -1)
             }
-            MotionEvent.ACTION_MOVE -> when (mode) {
+            MotionEvent.ACTION_MOVE -> if (guideDragging) updateGuideDrag(e.x, e.y) else when (mode) {
                 Mode.DRAW -> { val i = e.findPointerIndex(activePointer); if (i >= 0) toolMove(e, i) }
                 Mode.GESTURE -> gestureMove(e)
                 else -> {}
@@ -390,6 +464,7 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 else if (mode == Mode.DRAW && e.getPointerId(e.actionIndex) == activePointer) { toolUp(e, e.actionIndex); mode = Mode.NONE }
             }
             MotionEvent.ACTION_UP -> {
+                if (guideDragging) { endGuideDrag(e.x, e.y); guideDragging = false; return true }
                 if (mode == Mode.DRAW) {
                     val i = e.findPointerIndex(activePointer)
                     toolUp(e, if (i >= 0) i else 0)
@@ -464,7 +539,7 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 if (curTool == Tool.ERASER && ctl.strokeEraser) { ctl.beginStrokeErase(); ctl.eraseStrokesAt(d[0], d[1], ctl.brushSettings[BrushKind.ERASER]!!.size / 2f) }
                 else startStroke(d[0], d[1], pressureOf(e, i, -1), tiltOf(e, i, -1))
             }
-            Tool.LINE, Tool.RECT, Tool.ELLIPSE -> { shapeX0 = d[0]; shapeY0 = d[1]; shapeX1 = d[0]; shapeY1 = d[1]; shapeActive = true }
+            Tool.LINE, Tool.RECT, Tool.ELLIPSE -> { val sp = ctl.snapPoint(d[0], d[1]); shapeX0 = sp.x; shapeY0 = sp.y; shapeX1 = sp.x; shapeY1 = sp.y; shapeActive = true }
             Tool.LASSO -> {
                 selDragging = ctl.selection != null && ctl.beginSelectionDrag(d[0], d[1], tolDoc(), rotOffset())
                 if (!selDragging) { ctl.selection = null; lasso.clear(); lasso.add(d[0]); lasso.add(d[1]); lassoActive = true }
@@ -499,7 +574,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
             }
             Tool.LINE, Tool.RECT, Tool.ELLIPSE -> {
                 val d = toDoc(e.getX(i), e.getY(i))
-                shapeX1 = d[0]; shapeY1 = d[1]
+                val sp = ctl.snapPoint(d[0], d[1])
+                shapeX1 = sp.x; shapeY1 = sp.y
                 if (curTool == Tool.LINE) snapLine()
             }
             Tool.LASSO -> {
