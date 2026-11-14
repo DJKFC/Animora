@@ -82,7 +82,7 @@ fun LayersPanel(ctl: EditorController, onImport: () -> Unit, onImportAudio: () -
             p.layers.reversed().forEach { l -> LayerRow(ctl, l) }
         }
         HorizontalDivider(color = Pal.line)
-        ctl.activeLayer?.let { LayerProps(ctl, it) }
+        ctl.activeLayer?.let { LayerProps(ctl, it, onLipSync) }
     }
 }
 
@@ -137,7 +137,7 @@ private fun LayerRow(ctl: EditorController, l: Layer) {
 }
 
 @Composable
-private fun LayerProps(ctl: EditorController, l: Layer) {
+private fun LayerProps(ctl: EditorController, l: Layer, onLipSync: () -> Unit) {
     ctl.version
     var blendMenu by remember { mutableStateOf(false) }
     var bindMenu by remember { mutableStateOf(false) }
