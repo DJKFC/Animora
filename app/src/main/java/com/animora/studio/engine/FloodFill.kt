@@ -12,9 +12,9 @@ import kotlin.math.min
  * и расширением под линии (без светлого ореола).
  */
 object FloodFill {
-    class Result(val bitmap: Bitmap, val x: Int, val y: Int)
+    class Result(val bitmap: Bitmap, val x: Int, val y: Int, val contours: List<FloatArray>? = null)
 
-    fun fill(src: Bitmap, sx: Int, sy: Int, color: Int, tolerance: Int, gap: Int, expand: Int): Result? {
+    fun fill(src: Bitmap, sx: Int, sy: Int, color: Int, tolerance: Int, gap: Int, expand: Int, vector: Boolean = false): Result? {
         val w = src.width; val h = src.height
         if (sx !in 0 until w || sy !in 0 until h) return null
         val px = IntArray(w * h)
@@ -57,7 +57,11 @@ object FloodFill {
         }
         val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
         bmp.setPixels(out, 0, bw, 0, 0, bw, bh)
-        return Result(bmp, l, t)
+        val contours = if (!vector) null else {
+            val crop = BooleanArray(bw * bh) { i -> mask[(i / bw + t) * w + i % bw + l] }
+            Contour.trace(crop, bw, bh).map { c -> FloatArray(c.size) { i -> c[i] + if (i % 2 == 0) l else t } }
+        }
+        return Result(bmp, l, t, contours)
     }
 
     private fun similar(a: Int, b: Int, tol: Int): Boolean {

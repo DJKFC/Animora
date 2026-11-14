@@ -22,6 +22,8 @@ import com.animora.studio.engine.AudioPlayback
 import com.animora.studio.engine.Bones
 import com.animora.studio.engine.FloatList
 import com.animora.studio.engine.FloodFill
+import com.animora.studio.engine.StrokeOps
+import com.animora.studio.engine.Warp
 import com.animora.studio.engine.FrameOptions
 import com.animora.studio.engine.History
 import com.animora.studio.engine.Interp
@@ -35,6 +37,11 @@ import com.animora.studio.export.Exporter
 import com.animora.studio.model.AudioClip
 import com.animora.studio.model.BitmapElement
 import com.animora.studio.model.ColorEffect
+import com.animora.studio.model.FillStyle
+import com.animora.studio.model.GradientType
+import com.animora.studio.model.MeshBitmapElement
+import com.animora.studio.model.PathFillElement
+import com.animora.studio.model.WarpPin
 import com.animora.studio.model.InstanceElement
 import com.animora.studio.model.LoopMode
 import com.animora.studio.model.Symbol
@@ -91,7 +98,8 @@ data class BrushSettings(
 enum class Tool(val title: String) {
     BRUSH("Кисть"), ERASER("Ластик"), FILL("Заливка"), EYEDROPPER("Пипетка"),
     LINE("Линия"), RECT("Прямоугольник"), ELLIPSE("Эллипс"),
-    LASSO("Лассо"), TRANSFORM("Трансформация ключа"), TEXT("Текст"),
+    LASSO("Лассо"), BEND("Изгиб линий"), WIDTH("Ширина линии"), WARP("Деформация булавками"),
+    TRANSFORM("Трансформация ключа"), TEXT("Текст"),
     BONE("Кость"), POSE("Поза"), HAND("Рука")
 }
 
@@ -267,7 +275,7 @@ class EditorController(
         "$version|$frame|$onionEnabled|$onionPrev|$onionNext|$onionOpacity|$onionAllLayers|$onionKeysOnly|$onionTint|$activeLayerId|$playing"
 
     fun overlayKey(): String =
-        "${selection?.indices?.size}|$selectedBoneId|${com.animora.studio.ui.UiPrefs.workspace}|$showGrid|$showSafeArea|$showBones|$flipView|$viewResetToken|$tool|$symmetry|$color"
+        "${selection?.indices?.size}|$selectedBoneId|$selectedPin|${com.animora.studio.ui.UiPrefs.workspace}|$showGrid|$showSafeArea|$showBones|$flipView|$viewResetToken|$tool|$symmetry|$color"
 
     // ---------------- история ----------------
     fun checkpoint() = history.checkpoint()
@@ -926,6 +934,8 @@ class EditorController(
         }
         is InstanceElement -> e.bounds().let { b -> b.inset(-r, -r); b.contains(x, y) }
         is TextElement -> e.bounds().let { b -> b.inset(-r, -r); b.contains(x, y) }
+        is PathFillElement -> e.contours.count { pointInPolygon(x, y, it) } % 2 == 1
+        is MeshBitmapElement -> e.bounds().contains(x, y)
     }
 
     fun fillAt(x: Float, y: Float) {
@@ -938,7 +948,7 @@ class EditorController(
         scope.launch {
             val res = withContext(Dispatchers.Default) {
                 val bmp = Renderer().renderBitmap(snap, f, 1f, opt)
-                FloodFill.fill(bmp, x.toInt(), y.toInt(), c, tol, gap, 1)
+                FloodFill.fill(bmp, x.toInt(), y.toInt(), c, tol, gap, 1, vectorFill)
             }
             busy = null
             if (res == null) { toast("Область не найдена"); return@launch }
@@ -947,7 +957,10 @@ class EditorController(
             checkpoint()
             val k = keyForDrawing(l)
             val m = Matrix().apply { setTranslate(res.x.toFloat(), res.y.toFloat()); postConcat(inverseLayerMatrix(l)) }
-            val e = BitmapElement(res.bitmap, m)
+            val contours = res.contours
+            val e: Element = if (vectorFill && !contours.isNullOrEmpty()) {
+                PathFillElement(contours, FillStyle(c, fillGradient, fillColor2, fillAngle)).transformed(inverseLayerMatrix(l))
+            } else BitmapElement(res.bitmap, m)
             if (fillBehind) k.elements.add(0, e) else k.elements.add(e)
             pushRecentColor(c)
             changed()
@@ -982,6 +995,9 @@ class EditorController(
                     val r = el.bounds(); m.mapRect(r); pointInPolygon(r.centerX(), r.centerY(), poly)
                 }
                 is TextElement -> {
+                    val r = el.bounds(); m.mapRect(r); pointInPolygon(r.centerX(), r.centerY(), poly)
+                }
+                is PathFillElement, is MeshBitmapElement -> {
                     val r = el.bounds(); m.mapRect(r); pointInPolygon(r.centerX(), r.centerY(), poly)
                 }
             }
@@ -1142,6 +1158,8 @@ class EditorController(
                 }
                 is InstanceElement -> e.with(effect = e.effect.copy(tint = color, tintAmount = 1f))
                 is TextElement -> e.copyWith(color = color)
+                is PathFillElement -> e.withStyle(e.style.copy(color = color))
+                is MeshBitmapElement -> e
             }
         }
         changed()
@@ -1504,6 +1522,154 @@ class EditorController(
             activeLayerId = l.id
             changed(); toast("Изображение добавлено как направляющий слой (не экспортируется)")
         }
+    }
+
+    // ---------------- векторная правка (этап 4) ----------------
+    var vectorFill by mutableStateOf(true)
+    var fillGradient by mutableStateOf(GradientType.NONE)
+    var fillColor2 by mutableIntStateOf(0xFFFFFFFF.toInt())
+    var fillAngle by mutableFloatStateOf(90f)
+    /** Мягкость изгиба/ширины: доля длины штриха, на которую расходится влияние. */
+    var bendRadius by mutableFloatStateOf(0.35f)
+
+    private var bendKey: Keyframe? = null
+    private var bendIndex = -1
+    private var bendOrig: StrokeElement? = null
+    private var bendPoint = -1
+    private val bendStart = PointF()
+    private var bendLocalInv = Matrix()
+
+    /** Начать изгиб/изменение ширины: ищем ближайший штрих под пальцем. */
+    fun beginStrokeEdit(x: Float, y: Float, tol: Float): Boolean {
+        val l = editableLayer() ?: return false
+        val held = l.keyframes.floorEntry(frame)?.value ?: return false
+        val inv = inverseLayerMatrix(l)
+        val p = floatArrayOf(x, y); inv.mapPoints(p)
+        val lt = tol * inv.mapRadius(1f)
+        var best = -1; var bd = Float.MAX_VALUE; var bp = -1
+        held.elements.forEachIndexed { i, e ->
+            if (e is StrokeElement && e.kind != BrushKind.ERASER) {
+                val (pi, d) = StrokeOps.nearestIndex(e, p[0], p[1])
+                if (d < bd) { bd = d; best = i; bp = pi }
+            }
+        }
+        if (best < 0 || bd > lt + 8f) { toast("Коснитесь линии"); return false }
+        checkpoint()
+        val k = keyForTransform(l) ?: return false
+        bendKey = k; bendIndex = best; bendOrig = k.elements[best] as StrokeElement; bendPoint = bp
+        bendStart.set(p[0], p[1]); bendLocalInv = inv
+        return true
+    }
+
+    fun updateStrokeEdit(x: Float, y: Float, widthMode: Boolean) {
+        val k = bendKey ?: return; val o = bendOrig ?: return
+        val p = floatArrayOf(x, y); bendLocalInv.mapPoints(p)
+        var len = 0f
+        for (i in 1 until o.count) len += hypot(o.x(i) - o.x(i - 1), o.y(i) - o.y(i - 1))
+        val radius = max(12f, len * bendRadius)
+        k.elements[bendIndex] = if (widthMode) {
+            val factor = kotlin.math.exp(-(p[1] - bendStart.y) / (o.size * 3f + 40f)).coerceIn(0.05f, 8f)
+            StrokeOps.width(o, bendPoint, factor, radius)
+        } else StrokeOps.bend(o, bendPoint, p[0] - bendStart.x, p[1] - bendStart.y, radius)
+        changed()
+    }
+
+    fun endStrokeEdit() { bendKey = null; bendOrig = null }
+
+    private fun mapSelectedStrokes(f: (StrokeElement) -> StrokeElement) {
+        val s = selection ?: run { toast("Выделите линии лассо"); return }
+        val k = selectionKey() ?: return
+        checkpoint()
+        s.indices.forEach { i -> (k.elements[i] as? StrokeElement)?.let { k.elements[i] = f(it) } }
+        changed()
+    }
+
+    fun smoothSelection() = mapSelectedStrokes { StrokeOps.smooth(it) }
+    fun simplifySelection() = mapSelectedStrokes { StrokeOps.simplify(it) }
+
+    /** Применить текущий градиент к выделенным векторным заливкам. */
+    fun applyGradientToSelection() {
+        val s = selection ?: return
+        val k = selectionKey() ?: return
+        checkpoint()
+        var n = 0
+        s.indices.forEach { i -> (k.elements[i] as? PathFillElement)?.let { k.elements[i] = it.withStyle(FillStyle(it.style.color, fillGradient, fillColor2, fillAngle)); n++ } }
+        changed(); toast(if (n == 0) "В выделении нет векторных заливок" else "Градиент применён: $n")
+    }
+
+    // --- деформация булавками ---
+    var selectedPin by mutableIntStateOf(-1)
+    private var pinKey: Keyframe? = null
+    private var pinLocalInv = Matrix()
+
+    /** Булавки текущего ключа в координатах холста. */
+    fun pinsDoc(): List<PointF> {
+        val l = activeLayer ?: return emptyList()
+        val k = l.keyframes.floorEntry(frame)?.value ?: return emptyList()
+        if (k.pins.isEmpty()) return emptyList()
+        val m = Renderer.layerMatrix(project, l, frame)
+        val pins = l.keyframes.higherEntry(l.keyframes.floorKey(frame))?.value?.let { nx ->
+            val e = l.keyframes.floorEntry(frame)
+            if (k.tween != TweenType.NONE && nx.pins.size == k.pins.size && frame > e.key)
+                Warp.lerpPins(k.pins, nx.pins, k.ease(CurveProp.SHAPE, (frame - e.key).toFloat() / (l.keyframes.higherKey(e.key)!! - e.key))) else k.pins
+        } ?: k.pins
+        return pins.map { pin -> val p = floatArrayOf(pin.x, pin.y); m.mapPoints(p); PointF(p[0], p[1]) }
+    }
+
+    fun beginWarp(x: Float, y: Float, tol: Float): Boolean {
+        val l = editableLayer() ?: return false
+        if (l.keyframes.floorEntry(frame) == null) return false
+        checkpoint()
+        val k = keyForTransform(l) ?: return false
+        val inv = inverseLayerMatrix(l)
+        val p = floatArrayOf(x, y); inv.mapPoints(p)
+        val lt = tol * inv.mapRadius(1f)
+        val hit = k.pins.indices.minByOrNull { hypot(k.pins[it].x - p[0], k.pins[it].y - p[1]) }
+            ?.takeIf { hypot(k.pins[it].x - p[0], k.pins[it].y - p[1]) < lt }
+        if (hit != null) selectedPin = hit else {
+            val rest = Warp.unmap(k.pins, p[0], p[1])
+            val pin = WarpPin(rest[0], rest[1], p[0], p[1])
+            val oldCount = k.pins.size
+            k.pins = k.pins + pin
+            // в остальных ключах слоя булавка тоже появляется (без смещения), чтобы твин деформации работал
+            l.keyframes.values.forEach { o -> if (o !== k && o.pins.size == oldCount) o.pins = o.pins + WarpPin(rest[0], rest[1], rest[0], rest[1]) }
+            selectedPin = k.pins.size - 1
+            toast("Булавка ${k.pins.size}. Тяните булавки, чтобы гнуть рисунок")
+        }
+        pinKey = k; pinLocalInv = inv
+        changed()
+        return true
+    }
+
+    fun dragWarp(x: Float, y: Float) {
+        val k = pinKey ?: return
+        val i = selectedPin.takeIf { it in k.pins.indices } ?: return
+        val p = floatArrayOf(x, y); pinLocalInv.mapPoints(p)
+        k.pins = k.pins.toMutableList().also { it[i] = it[i].copy(x = p[0], y = p[1]) }
+        changed()
+    }
+
+    fun endWarp() { pinKey = null }
+
+    fun deleteSelectedPin() {
+        val l = activeLayer ?: return
+        val k = l.keyframes[frame] ?: l.keyframes.floorEntry(frame)?.value ?: return
+        val i = selectedPin.takeIf { it in k.pins.indices } ?: return
+        checkpoint()
+        val n = k.pins.size
+        l.keyframes.values.forEach { o -> if (o.pins.size == n) o.pins = o.pins.toMutableList().also { it.removeAt(i) } }
+        selectedPin = -1; changed()
+    }
+
+    fun clearPins() {
+        val l = activeLayer ?: return
+        checkpoint(); l.keyframes.values.forEach { it.pins = emptyList() }; selectedPin = -1; changed()
+    }
+
+    fun resetPinsHere() {
+        val l = editableLayer() ?: return
+        checkpoint(); val k = keyForTransform(l) ?: return
+        k.pins = k.pins.map { it.copy(x = it.rx, y = it.ry) }; changed()
     }
 
     // ---------------- текст ----------------

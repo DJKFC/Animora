@@ -140,5 +140,25 @@ tap "Воспроизвести"; sleep 3; tap "Воспроизвести"; sle
 crashcheck stage3
 adb shell input keyevent 4; sleep 4
 crashcheck stage3_back
+# этап 4: векторная заливка, изгиб, ширина, булавки, фильтры
+tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
+adb shell input swipe $((W*3/10)) $((H*4/10)) $((W*7/10)) $((H*4/10)) 500; sleep 1
+adb shell input swipe $((W*7/10)) $((H*4/10)) $((W*5/10)) $((H*6/10)) 500; sleep 1
+adb shell input swipe $((W*5/10)) $((H*6/10)) $((W*3/10)) $((H*4/10)) 500; sleep 1
+tap "Заливка"; sleep 1; tap "Линейный"; sleep 1
+adb shell input tap $((W*5/10)) $((H*46/100)); sleep 4; shot vfill
+tap "Изгиб линий"; sleep 1
+adb shell input swipe $((W*5/10)) $((H*4/10)) $((W*5/10)) $((H*3/10)) 500; sleep 2
+tap "Ширина линии"; sleep 1
+adb shell input swipe $((W*4/10)) $((H*4/10)) $((W*4/10)) $((H*35/100)) 500; sleep 2
+tap "Деформация булавками"; sleep 1
+adb shell input tap $((W*3/10)) $((H*4/10)); sleep 1
+adb shell input tap $((W*7/10)) $((H*4/10)); sleep 1
+adb shell input swipe $((W*7/10)) $((H*4/10)) $((W*8/10)) $((H*3/10)) 500; sleep 2; shot warp
+tap "✨ Фильтры…"; sleep 2; shot fx; tap "Готово"; sleep 2
+tap "Воспроизвести"; sleep 3; tap "Воспроизвести"; sleep 1
+crashcheck stage4
+adb shell input keyevent 4; sleep 4
+crashcheck stage4_back
 adb logcat -d > out/logcat.txt
 exit 0

@@ -140,6 +140,11 @@ object Serializer {
         l.parentId?.let { put("parent", it) }
         l.folderId?.let { put("folder", it) }
         if (l.collapsed) put("collapsed", true)
+        if (!l.fx.isDefault) put("fx", JSONArray().apply {
+            val f = l.fx
+            listOf(f.blur, if (f.shadow) 1f else 0f, f.shadowDx, f.shadowDy, f.shadowBlur, f.glow, f.brightness, f.contrast, f.saturation, f.hue).forEach { put(it.toDouble()) }
+            put(f.shadowColor); put(f.glowColor)
+        })
         l.maskedBy?.let { put("maskedBy", it) }
         if (l.depth != 0f) put("depth", l.depth.toDouble())
         l.audio?.let { c ->
@@ -153,6 +158,7 @@ object Serializer {
                 put(JSONObject().apply {
                     put("f", f); put("tween", k.tween.name); put("easing", k.easing.name); put("label", k.label)
                     k.curve?.let { put("curve", it.toJson()) }
+                    if (k.pins.isNotEmpty()) put("pins", JSONArray().apply { k.pins.forEach { pin -> listOf(pin.rx, pin.ry, pin.x, pin.y).forEach { put(it.toDouble()) } } })
                     k.guide?.let { g -> put("guide", JSONArray().apply { g.forEach { v -> put(v.toDouble()) } }); if (k.orientToPath) put("orient", true) }
                     if (k.separateCurves) put("sepCurves", true)
                     if (k.propCurves.isNotEmpty()) put("propCurves", JSONObject().apply { k.propCurves.forEach { (pr, c) -> put(pr.name, c.toJson()) } })
@@ -166,6 +172,12 @@ object Serializer {
                                     put("k", e.kind.name); put("o", e.opacity.toDouble()); put("p", floatsToB64(e.pts))
                                     e.tipId?.let { put("tip", it) }
                                 })
+                                is PathFillElement -> put(JSONObject().apply {
+                                    put("t", "f"); put("c", e.style.color); put("g", e.style.gradient.name); put("c2", e.style.color2)
+                                    put("ang", e.style.angle.toDouble()); put("a", e.alpha.toDouble())
+                                    put("cont", JSONArray().apply { e.contours.forEach { put(floatsToB64(it)) } })
+                                })
+                                is MeshBitmapElement -> {}
                                 is TextElement -> put(JSONObject().apply {
                                     put("t", "x"); put("text", e.text); put("sz", e.size.toDouble()); put("c", e.color)
                                     put("font", e.font.name); put("b", e.bold); put("it", e.italic); put("al", e.align.name)
@@ -252,6 +264,10 @@ object Serializer {
             parentId = if (o.has("parent")) o.getString("parent") else null,
             folderId = if (o.has("folder")) o.getString("folder") else null,
             collapsed = o.optBoolean("collapsed", false),
+            fx = o.optJSONArray("fx")?.let { a ->
+                fun v(i: Int) = a.getDouble(i).toFloat()
+                LayerFx(v(0), v(1) > 0.5f, v(2), v(3), v(4), a.getInt(10), v(5), a.getInt(11), v(6), v(7), v(8), v(9))
+            } ?: LayerFx(),
             maskedBy = if (o.has("maskedBy")) o.getString("maskedBy") else null,
             depth = o.optDouble("depth", 0.0).toFloat(),
             audio = o.optJSONObject("audio")?.let { a ->
@@ -274,7 +290,8 @@ object Serializer {
                 curve = k.optJSONArray("curve")?.let { EaseCurve.fromJson(it) },
                 separateCurves = k.optBoolean("sepCurves", false),
                 guide = k.optJSONArray("guide")?.let { a -> FloatArray(a.length()) { a.getDouble(it).toFloat() } },
-                orientToPath = k.optBoolean("orient", false)
+                orientToPath = k.optBoolean("orient", false),
+                pins = k.optJSONArray("pins")?.let { a -> (0 until a.length() / 4).map { i -> WarpPin(a.getDouble(i * 4).toFloat(), a.getDouble(i * 4 + 1).toFloat(), a.getDouble(i * 4 + 2).toFloat(), a.getDouble(i * 4 + 3).toFloat()) } } ?: emptyList()
             )
             k.optJSONObject("propCurves")?.let { pc ->
                 pc.keys().forEach { name ->
@@ -295,6 +312,14 @@ object Serializer {
                             if (e.has("tip")) e.getString("tip") else null
                         )
                     )
+                    "f" -> {
+                        val ca = e.getJSONArray("cont")
+                        kf.elements.add(PathFillElement(
+                            (0 until ca.length()).map { b64ToFloats(ca.getString(it)) },
+                            FillStyle(e.getInt("c"), runCatching { GradientType.valueOf(e.getString("g")) }.getOrDefault(GradientType.NONE), e.optInt("c2", -1), e.optDouble("ang", 90.0).toFloat()),
+                            e.optDouble("a", 1.0).toFloat()
+                        ))
+                    }
                     "x" -> kf.elements.add(TextElement(
                         e.getString("text"), e.getDouble("sz").toFloat(), e.getInt("c"),
                         runCatching { TextFont.valueOf(e.getString("font")) }.getOrDefault(TextFont.SANS),

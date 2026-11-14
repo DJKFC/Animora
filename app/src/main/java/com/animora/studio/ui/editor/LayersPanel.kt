@@ -188,6 +188,9 @@ private fun LayerProps(ctl: EditorController, l: Layer, onLipSync: () -> Unit) {
                     }
                 }
             }
+            var fxOpen by remember { mutableStateOf(false) }
+            SmallBtn(if (l.fx.isDefault) "✨ Фильтры…" else "✨ Фильтры (вкл)…", selected = !l.fx.isDefault) { fxOpen = true }
+            if (fxOpen) LayerFxDialog(ctl, l.id) { fxOpen = false }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                 Text("Слой-маска (показывает нижние слои только внутри своих фигур)", fontSize = 12.sp, modifier = Modifier.weight(1f))
                 Switch(l.isMask, { v -> ctl.updateLayer(l.id) { it.isMask = v; if (v) it.maskedBy = null } })

@@ -57,7 +57,10 @@ import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.LineWeight
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -331,6 +334,9 @@ fun toolIcon(t: Tool): ImageVector = when (t) {
     Tool.POSE -> Icons.Filled.AccessibilityNew
     Tool.HAND -> Icons.Filled.PanTool
     Tool.TEXT -> Icons.Filled.TextFields
+    Tool.BEND -> Icons.Filled.Timeline
+    Tool.WIDTH -> Icons.Filled.LineWeight
+    Tool.WARP -> Icons.Filled.PushPin
 }
 
 @Composable
@@ -409,6 +415,17 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                     Text("Зазоры ${ctl.fillGap}px", fontSize = 12.sp, color = Pal.dim)
                     Slider(ctl.fillGap.toFloat(), { ctl.fillGap = it.toInt() }, valueRange = 0f..12f, modifier = Modifier.width(100.dp))
                     SmallBtn("Под линиями", selected = ctl.fillBehind) { ctl.fillBehind = !ctl.fillBehind }
+                    SmallBtn("Вектор", selected = ctl.vectorFill) { ctl.vectorFill = !ctl.vectorFill }
+                    com.animora.studio.model.GradientType.entries.forEach { g -> SmallBtn(g.title, selected = ctl.fillGradient == g) { ctl.fillGradient = g } }
+                    if (ctl.fillGradient != com.animora.studio.model.GradientType.NONE) {
+                        Text(" 2-й цвет:", fontSize = 12.sp, color = Pal.dim)
+                        ctl.recentColors.take(6).forEach { c -> Box(Modifier.padding(2.dp)) { ColorDot(c, 22, selected = ctl.fillColor2 == c) { ctl.fillColor2 = c } } }
+                        Box(Modifier.padding(2.dp)) { ColorDot(0xFFFFFFFF.toInt(), 22, selected = ctl.fillColor2 == 0xFFFFFFFF.toInt()) { ctl.fillColor2 = 0xFFFFFFFF.toInt() } }
+                        if (ctl.fillGradient == com.animora.studio.model.GradientType.LINEAR) {
+                            Text("Угол ${ctl.fillAngle.toInt()}°", fontSize = 12.sp, color = Pal.dim)
+                            Slider(ctl.fillAngle, { ctl.fillAngle = it }, valueRange = 0f..360f, modifier = Modifier.width(90.dp))
+                        }
+                    }
                     SmallBtn("По всем слоям", selected = ctl.fillAllLayers) { ctl.fillAllLayers = !ctl.fillAllLayers }
                 }
                 Tool.LINE, Tool.RECT, Tool.ELLIPSE -> {
@@ -427,6 +444,9 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                         IconBtn(Icons.Filled.ContentCopy, "Копировать") { ctl.copySelection() }
                         IconBtn(Icons.Filled.ContentPaste, "Вставить") { ctl.paste() }
                         SmallBtn("Дубль") { ctl.duplicateSelection() }
+                        SmallBtn("Сгладить") { ctl.smoothSelection() }
+                        SmallBtn("Упростить") { ctl.simplifySelection() }
+                        SmallBtn("Градиент") { ctl.applyGradientToSelection() }
                         IconBtn(Icons.Filled.Flip, "Отразить горизонтально") { ctl.flipSelection(true) }
                         IconBtn(Icons.Filled.Flip, "Отразить вертикально", modifier = Modifier.rotate(90f)) { ctl.flipSelection(false) }
                         IconBtn(Icons.Filled.FormatColorFill, "Перекрасить") { ctl.recolorSelection() }
@@ -478,6 +498,18 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                 }
                 Tool.EYEDROPPER -> Text("Коснитесь цвета на холсте (кнопка 2 стилуса — тоже пипетка)", fontSize = 12.sp, color = Pal.dim)
                 Tool.HAND -> Text("Сдвиг одним пальцем · масштаб и поворот двумя", fontSize = 12.sp, color = Pal.dim)
+                Tool.BEND, Tool.WIDTH -> {
+                    Text(if (ctl.tool == Tool.BEND) "Тяните точку линии — линия изгибается  " else "Тяните вверх по линии — толще, вниз — тоньше  ", fontSize = 12.sp, color = Pal.dim)
+                    Text("Мягкость ${(ctl.bendRadius * 100).toInt()}%", fontSize = 12.sp, color = Pal.dim)
+                    Slider(ctl.bendRadius, { ctl.bendRadius = it }, valueRange = 0.05f..1f, modifier = Modifier.width(110.dp))
+                }
+                Tool.WARP -> {
+                    Text("Касание — булавка, тяните булавки — рисунок гнётся  ", fontSize = 12.sp, color = Pal.dim)
+                    if (ctl.selectedPin >= 0) SmallBtn("Удалить булавку") { ctl.deleteSelectedPin() }
+                    SmallBtn("Выпрямить в этом ключе") { ctl.resetPinsHere() }
+                    SmallBtn("Убрать все") { ctl.clearPins() }
+                    Text(" Разные позы булавок в ключах + твин = плавная деформация", fontSize = 11.sp, color = Pal.dim)
+                }
                 Tool.TEXT -> {
                     val sel = ctl.selectedText()
                     fun applySel(f: (com.animora.studio.model.TextElement) -> com.animora.studio.model.TextElement) { if (sel != null) ctl.updateText(f) }

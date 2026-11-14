@@ -204,9 +204,11 @@ class Keyframe(
     /** Направляющая движения (x,y парами, координаты родителя слоя): твин движения идёт вдоль неё. */
     var guide: FloatArray? = null,
     /** Поворачивать объект по касательной к направляющей. */
-    var orientToPath: Boolean = false
+    var orientToPath: Boolean = false,
+    /** Булавки деформации (Asset Warp): тянем булавку — рисунок гнётся сеткой; между ключами плавно. */
+    var pins: List<WarpPin> = emptyList()
 ) {
-    fun copy() = Keyframe(elements.toMutableList(), tween, easing, transform, label, curve, separateCurves, HashMap(propCurves), guide, orientToPath)
+    fun copy() = Keyframe(elements.toMutableList(), tween, easing, transform, label, curve, separateCurves, HashMap(propCurves), guide, orientToPath, pins)
 
     /** Прогресс свойства prop при линейном прогрессе raw (0..1) с учётом кривых. */
     fun ease(prop: CurveProp, raw: Float): Float =
@@ -267,13 +269,15 @@ class Layer(
     /** Папка, в которой лежит слой. */
     var folderId: String? = null,
     /** Для папки — свёрнута ли она в таймлайне и панели слоёв. */
-    var collapsed: Boolean = false
+    var collapsed: Boolean = false,
+    /** Фильтры и цветокоррекция слоя. */
+    var fx: LayerFx = LayerFx()
 ) {
     fun copy(freshId: Boolean = false): Layer {
         val l = Layer(
             if (freshId) newId() else id, name, type, visible, locked, opacity, blend, guide, color,
             bindLayer = bindLayer, bindBone = bindBone, isMask = isMask, maskedBy = maskedBy, depth = depth, audio = audio,
-            parentId = parentId, folderId = folderId, collapsed = collapsed
+            parentId = parentId, folderId = folderId, collapsed = collapsed, fx = fx
         )
         keyframes.forEach { (f, k) -> l.keyframes[f] = k.copy() }
         l.bones.addAll(bones)
@@ -473,4 +477,52 @@ class TextElement(
         /** Точное измерение ширины, подключается рендером (Paint). */
         @Volatile var measure: ((TextElement) -> Float)? = null
     }
+}
+
+/** Булавка деформации: (rx, ry) — исходное место, (x, y) — куда утянута (координаты слоя). */
+data class WarpPin(val rx: Float, val ry: Float, val x: Float, val y: Float)
+
+/** Фильтры слоя (как фильтры Animate): размытие, тень, свечение, цветокоррекция. */
+data class LayerFx(
+    val blur: Float = 0f,
+    val shadow: Boolean = false, val shadowDx: Float = 10f, val shadowDy: Float = 10f, val shadowBlur: Float = 10f,
+    val shadowColor: Int = 0x99000000.toInt(),
+    val glow: Float = 0f, val glowColor: Int = 0xFFFFE066.toInt(),
+    val brightness: Float = 0f, val contrast: Float = 0f, val saturation: Float = 0f, val hue: Float = 0f
+) {
+    val hasPixelFx: Boolean get() = blur > 0.5f || shadow || glow > 0.5f
+    val hasColorFx: Boolean get() = brightness != 0f || contrast != 0f || saturation != 0f || hue != 0f
+    val isDefault: Boolean get() = !hasPixelFx && !hasColorFx
+}
+
+enum class GradientType(val title: String) { NONE("Сплошная"), LINEAR("Линейный"), RADIAL("Радиальный") }
+
+/** Стиль заливки: цвет или градиент из двух цветов. angle — направление линейного градиента. */
+data class FillStyle(val color: Int, val gradient: GradientType = GradientType.NONE, val color2: Int = 0xFFFFFFFF.toInt(), val angle: Float = 90f)
+
+/** Векторная заливка: контуры (x,y парами), правило «чёт-нечет» (дырки — внутренние контуры). */
+class PathFillElement(val contours: List<FloatArray>, val style: FillStyle, val alpha: Float = 1f) : Element() {
+    var cachedPath: Path? = null
+
+    override fun bounds(): RectF {
+        var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
+        for (c in contours) { var i = 0; while (i < c.size) { val x = c[i]; val y = c[i + 1]; if (x < l) l = x; if (x > r) r = x; if (y < t) t = y; if (y > b) b = y; i += 2 } }
+        return if (l > r) RectF() else RectF(l, t, r, b)
+    }
+
+    override fun transformed(m: Matrix): PathFillElement =
+        PathFillElement(contours.map { c -> c.copyOf().also { m.mapPoints(it) } }, style, alpha)
+
+    fun withStyle(s: FillStyle) = PathFillElement(contours, s, alpha).also { it.cachedPath = cachedPath }
+    fun withAlpha(a: Float) = PathFillElement(contours, style, a).also { it.cachedPath = cachedPath }
+}
+
+/** Служебный элемент рендера: растр, деформированный сеткой (результат Asset Warp). Не сохраняется. */
+class MeshBitmapElement(val bitmap: Bitmap, val meshW: Int, val meshH: Int, val verts: FloatArray, val alpha: Float) : Element() {
+    override fun bounds(): RectF {
+        var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
+        var i = 0; while (i < verts.size) { val x = verts[i]; val y = verts[i + 1]; if (x < l) l = x; if (x > r) r = x; if (y < t) t = y; if (y > b) b = y; i += 2 }
+        return RectF(l, t, r, b)
+    }
+    override fun transformed(m: Matrix) = MeshBitmapElement(bitmap, meshW, meshH, verts.copyOf().also { m.mapPoints(it) }, alpha)
 }

@@ -88,3 +88,49 @@ fun InstanceDialog(ctl: EditorController, onDismiss: () -> Unit) {
         picker = false
     }
 }
+
+/** Фильтры слоя: размытие, тень, свечение, цветокоррекция. */
+@Composable
+fun LayerFxDialog(ctl: EditorController, layerId: String, onDismiss: () -> Unit) {
+    ctl.version
+    val l = ctl.project.layer(layerId) ?: return
+    val fx = l.fx
+    fun set(tag: String, f: (com.animora.studio.model.LayerFx) -> com.animora.studio.model.LayerFx) = ctl.updateLayer(layerId, tag) { it.fx = f(it.fx) }
+    var shadowPick by remember { mutableStateOf(false) }
+    var glowPick by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Готово") } },
+        dismissButton = { TextButton(onClick = { ctl.updateLayer(layerId) { it.fx = com.animora.studio.model.LayerFx() } }) { Text("Сбросить") } },
+        title = { Text("Фильтры слоя «${l.name}»") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                SectionTitle("Размытие ${fx.blur.roundToInt()} px")
+                Slider(fx.blur, { v -> set("blur") { it.copy(blur = v) } }, valueRange = 0f..80f)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Тень", Modifier.padding(end = 8.dp)); androidx.compose.material3.Switch(fx.shadow, { v -> set("sh${System.nanoTime()}") { it.copy(shadow = v) } })
+                    ColorDot(fx.shadowColor, 26) { shadowPick = true }
+                }
+                if (fx.shadow) {
+                    SectionTitle("Сдвиг тени ${fx.shadowDx.roundToInt()}, ${fx.shadowDy.roundToInt()} · размытие ${fx.shadowBlur.roundToInt()}")
+                    Slider(fx.shadowDx, { v -> set("shx") { it.copy(shadowDx = v) } }, valueRange = -80f..80f)
+                    Slider(fx.shadowDy, { v -> set("shy") { it.copy(shadowDy = v) } }, valueRange = -80f..80f)
+                    Slider(fx.shadowBlur, { v -> set("shb") { it.copy(shadowBlur = v) } }, valueRange = 0f..60f)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SectionTitle("Свечение ${fx.glow.roundToInt()} px  "); ColorDot(fx.glowColor, 26) { glowPick = true }
+                }
+                Slider(fx.glow, { v -> set("glow") { it.copy(glow = v) } }, valueRange = 0f..60f)
+                SectionTitle("Яркость ${(fx.brightness * 100).roundToInt()} · Контраст ${(fx.contrast * 100).roundToInt()}")
+                Slider(fx.brightness, { v -> set("br") { it.copy(brightness = v) } }, valueRange = -1f..1f)
+                Slider(fx.contrast, { v -> set("ct") { it.copy(contrast = v) } }, valueRange = -1f..1f)
+                SectionTitle("Насыщенность ${(fx.saturation * 100).roundToInt()} · Тон ${fx.hue.roundToInt()}°")
+                Slider(fx.saturation, { v -> set("sat") { it.copy(saturation = v) } }, valueRange = -1f..1f)
+                Slider(fx.hue, { v -> set("hue") { it.copy(hue = v) } }, valueRange = -180f..180f)
+                Text("Размытие, тень и свечение видны на холсте и в экспорте; на слабых телефонах могут замедлять перерисовку.", fontSize = 11.sp, color = Pal.dim)
+            }
+        }
+    )
+    if (shadowPick) ColorPickerDialog(fx.shadowColor, ctl.project.palette, ctl.recentColors.toList(), {}, { shadowPick = false }) { c -> set("shc${System.nanoTime()}") { it.copy(shadowColor = c) }; shadowPick = false }
+    if (glowPick) ColorPickerDialog(fx.glowColor, ctl.project.palette, ctl.recentColors.toList(), {}, { glowPick = false }) { c -> set("glc${System.nanoTime()}") { it.copy(glowColor = c) }; glowPick = false }
+}

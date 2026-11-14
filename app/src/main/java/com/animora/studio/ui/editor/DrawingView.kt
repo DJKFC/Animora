@@ -280,6 +280,15 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
         }
         canvas.drawCircle(b.centerX(), b.top - rotOffset(), hs * 0.7f, overlay)
         if (ctl.tool == Tool.TRANSFORM) drawMotionPath(canvas, vs)
+        if (ctl.tool == Tool.WARP) {
+            ctl.pinsDoc().forEachIndexed { i, pt ->
+                overlay.reset(); overlay.isAntiAlias = true
+                overlay.color = if (i == ctl.selectedPin) 0xFFFF6B9A.toInt() else 0xFFFFC857.toInt()
+                canvas.drawCircle(pt.x, pt.y, 9f / vs, overlay)
+                overlay.style = Paint.Style.STROKE; overlay.strokeWidth = 2f / vs; overlay.color = Color.WHITE
+                canvas.drawCircle(pt.x, pt.y, 9f / vs, overlay)
+            }
+        }
         if (ctl.tool == Tool.TRANSFORM) ctl.keyPivotDoc()?.let {
             overlay.color = 0xFFFF4081.toInt(); canvas.drawCircle(it.x, it.y, 5f / vs, overlay)
         }
@@ -465,10 +474,15 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
             Tool.POSE -> { toScene(d); poseDragging = ctl.beginPose(d[0], d[1], tolDoc()) }
             Tool.BONE -> { toScene(d); shapeX0 = d[0]; shapeY0 = d[1]; shapeX1 = d[0]; shapeY1 = d[1]; shapeActive = false }
             Tool.EYEDROPPER -> pick(d[0], d[1])
+            Tool.BEND, Tool.WIDTH -> strokeEditing = ctl.beginStrokeEdit(d[0], d[1], tolDoc())
+            Tool.WARP -> warping = ctl.beginWarp(d[0], d[1], tolDoc())
             else -> {}
         }
         invalidate()
     }
+
+    private var strokeEditing = false
+    private var warping = false
 
     private fun toolMove(e: MotionEvent, i: Int) {
         lastRawX = e.getX(i); lastRawY = e.getY(i)
@@ -497,6 +511,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
             Tool.POSE -> if (poseDragging) { val d = toScene(toDoc(e.getX(i), e.getY(i))); ctl.dragPose(d[0], d[1]) }
             Tool.BONE -> { val d = toScene(toDoc(e.getX(i), e.getY(i))); shapeX1 = d[0]; shapeY1 = d[1]; shapeActive = true; curBonePreview() }
             Tool.EYEDROPPER -> { val d = toDoc(e.getX(i), e.getY(i)); pick(d[0], d[1]) }
+            Tool.BEND, Tool.WIDTH -> if (strokeEditing) { val d = toDoc(e.getX(i), e.getY(i)); ctl.updateStrokeEdit(d[0], d[1], curTool == Tool.WIDTH) }
+            Tool.WARP -> if (warping) { val d = toDoc(e.getX(i), e.getY(i)); ctl.dragWarp(d[0], d[1]) }
             else -> {}
         }
         invalidate()
@@ -545,6 +561,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 if (e.eventTime - downTime < 600) { val d = toDoc(e.getX(i), e.getY(i)); ctl.fillAt(d[0], d[1]) }
             }
             Tool.EYEDROPPER -> { pickerColor?.let { ctl.pushRecentColor(it) }; pickerColor = null }
+            Tool.BEND, Tool.WIDTH -> { if (strokeEditing) ctl.endStrokeEdit(); strokeEditing = false }
+            Tool.WARP -> { if (warping) ctl.endWarp(); warping = false }
             else -> {}
         }
         invalidate()

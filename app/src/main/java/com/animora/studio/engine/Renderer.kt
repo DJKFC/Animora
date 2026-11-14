@@ -10,6 +10,7 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PorterDuff
+import android.graphics.PorterDuffColorFilter
 import android.graphics.PorterDuffXfermode
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -20,6 +21,8 @@ import com.animora.studio.model.BrushRegistry
 import com.animora.studio.model.CurveProp
 import com.animora.studio.model.Keyframe
 import com.animora.studio.model.InstanceElement
+import com.animora.studio.model.MeshBitmapElement
+import com.animora.studio.model.PathFillElement
 import com.animora.studio.model.TextAlign
 import com.animora.studio.model.TextElement
 import com.animora.studio.model.TextFont
@@ -213,11 +216,14 @@ class Renderer {
             val next = layer.keyframes.higherEntry(e.key)
             var elements: List<Element> = k.elements
             var tr = k.transform
+            var pins = k.pins
             if (next != null && k.tween != TweenType.NONE && frame > e.key) {
                 val raw = (frame - e.key).toFloat() / (next.key - e.key)
                 tr = tweenTransform(k, next.value, raw)
                 if (k.tween == TweenType.SHAPE) elements = Interp.morphElements(k.elements, next.value.elements, k.ease(CurveProp.SHAPE, raw))
+                if (pins.isNotEmpty() && next.value.pins.size == pins.size) pins = Warp.lerpPins(pins, next.value.pins, k.ease(CurveProp.SHAPE, raw))
             }
+            if (pins.isNotEmpty()) elements = Warp.apply(pins, elements)
             val m = tr.matrix()
             parentMatrix(scope ?: project.layers, layer, frame)?.let { m.postConcat(it) }
             Bones.bindMatrix(project, layer, frame, scope)?.let { m.postConcat(it) }
@@ -357,6 +363,10 @@ class Renderer {
 
     private fun drawResolved(c: Canvas, layer: Layer, r: Resolved, alphaMul: Float, tint: Int?, forMask: Boolean) {
         val alpha = if (forMask) 1f else layer.opacity * r.alpha * alphaMul
+        val fx = layer.fx
+        if (!forMask && tint == null && !fx.isDefault && (fx.hasColorFx || !c.isHardwareAccelerated)) {
+            drawWithFx(c, layer, r, alpha); return
+        }
         val needsLayer = tint != null || alpha < 0.999f || (layer.blend.mode != null && !forMask) ||
             r.elements.any { it is StrokeElement && it.kind == BrushKind.ERASER }
         if (!needsLayer) {
@@ -375,8 +385,75 @@ class Renderer {
         c.restoreToCount(save)
     }
 
+    /** Фильтры слоя: слой рисуется в отдельный битмап, затем тень, свечение, размытие и цветокоррекция. */
+    private fun drawWithFx(c: Canvas, layer: Layer, r: Resolved, alpha: Float) {
+        val fx = layer.fx
+        val colorPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+            this.alpha = (255 * alpha).toInt().coerceIn(0, 255)
+            layer.blend.mode?.let { xfermode = PorterDuffXfermode(it) }
+            if (fx.hasColorFx) colorFilter = ColorMatrixColorFilter(colorAdjust(fx))
+        }
+        if (!fx.hasPixelFx || c.isHardwareAccelerated || c.width <= 0) {
+            val save = c.saveLayer(null, colorPaint)
+            c.concat(r.matrix); for (e in r.elements) drawElement(c, e)
+            c.restoreToCount(save); return
+        }
+        val w = c.width; val h = c.height
+        val tmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val tc = Canvas(tmp)
+        @Suppress("DEPRECATION") val cm = c.matrix
+        tc.setMatrix(cm); tc.concat(r.matrix)
+        for (e in r.elements) drawElement(tc, e)
+        val scale = cm.mapRadius(1f)
+        val save = c.save()
+        c.setMatrix(Matrix())
+        if (fx.shadow) {
+            val sh = Blur.blur(tmp, fx.shadowBlur * scale)
+            val sp = Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = PorterDuffColorFilter(fx.shadowColor, PorterDuff.Mode.SRC_IN); this.alpha = (255 * alpha).toInt().coerceIn(0, 255) }
+            c.drawBitmap(sh, fx.shadowDx * scale, fx.shadowDy * scale, sp)
+        }
+        if (fx.glow > 0.5f) {
+            val gl = Blur.blur(tmp, fx.glow * scale)
+            val gp = Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = PorterDuffColorFilter(fx.glowColor, PorterDuff.Mode.SRC_IN); this.alpha = (255 * alpha).toInt().coerceIn(0, 255) }
+            c.drawBitmap(gl, 0f, 0f, gp); c.drawBitmap(gl, 0f, 0f, gp)
+        }
+        val body = if (fx.blur > 0.5f) Blur.blur(tmp, fx.blur * scale) else tmp
+        c.drawBitmap(body, 0f, 0f, colorPaint)
+        c.restoreToCount(save)
+    }
+
+    private fun colorAdjust(fx: com.animora.studio.model.LayerFx): ColorMatrix {
+        val m = ColorMatrix()
+        m.setSaturation((1f + fx.saturation).coerceAtLeast(0f))
+        if (fx.hue != 0f) {
+            // поворот тона в пространстве RGB (стандартная матрица hue-rotate)
+            val a = Math.toRadians(fx.hue.toDouble()); val cs = kotlin.math.cos(a).toFloat(); val sn = kotlin.math.sin(a).toFloat()
+            m.postConcat(ColorMatrix(floatArrayOf(
+                0.213f + cs * 0.787f - sn * 0.213f, 0.715f - cs * 0.715f - sn * 0.715f, 0.072f - cs * 0.072f + sn * 0.928f, 0f, 0f,
+                0.213f - cs * 0.213f + sn * 0.143f, 0.715f + cs * 0.285f + sn * 0.140f, 0.072f - cs * 0.072f - sn * 0.283f, 0f, 0f,
+                0.213f - cs * 0.213f - sn * 0.787f, 0.715f - cs * 0.715f + sn * 0.715f, 0.072f + cs * 0.928f + sn * 0.072f, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f
+            )))
+        }
+        val k = 1f + fx.contrast; val off = 128f * (1 - k) + fx.brightness * 255f
+        m.postConcat(ColorMatrix(floatArrayOf(k, 0f, 0f, 0f, off, 0f, k, 0f, 0f, off, 0f, 0f, k, 0f, off, 0f, 0f, 0f, 1f, 0f)))
+        return m
+    }
+
     fun drawElement(c: Canvas, e: Element) {
         when (e) {
+            is PathFillElement -> {
+                paint.reset(); paint.isAntiAlias = true; paint.style = Paint.Style.FILL
+                paint.color = e.style.color
+                paint.alpha = (Color.alpha(e.style.color) * e.alpha).toInt().coerceIn(0, 255)
+                FillPath.shader(e.style, e.bounds())?.let { paint.shader = it; paint.alpha = (255 * e.alpha).toInt().coerceIn(0, 255) }
+                c.drawPath(FillPath.get(e), paint)
+                paint.shader = null
+            }
+            is MeshBitmapElement -> {
+                bmpPaint.alpha = (255 * e.alpha).toInt().coerceIn(0, 255)
+                c.drawBitmapMesh(e.bitmap, e.meshW, e.meshH, e.verts, 0, null, 0, bmpPaint)
+            }
             is StrokeElement -> {
                 if (e.count == 0) return
                 if (e.kind == BrushKind.CUSTOM) BrushRegistry.get(e.tipId)?.let { drawStamps(c, e, it); return }
