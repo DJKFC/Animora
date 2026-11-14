@@ -1,6 +1,24 @@
 package com.animora.studio.ui.editor
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.BiasAlignment
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -142,15 +160,43 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
     }
     val tools: @Composable () -> Unit = { ToolRail(ctl, onColor = { dialog = Dlg.COLOR }, onBrush = { dialog = Dlg.BRUSH }) }
 
+    val tabs = !focus && UiPrefs.showPanelTabs
+    val toggleTools = { UiPrefs.toolsOpen = !UiPrefs.toolsOpen; UiPrefs.save() }
+    val toggleTimeline = { UiPrefs.timelineOpen = !UiPrefs.timelineOpen; UiPrefs.save() }
+    val toggleLayers = { showLayers = !showLayers }
+    val sideLayers = !UiPrefs.layersOverlay
+    val slideTimeline: @Composable () -> Unit = {
+        AnimatedVisibility(
+            !focus && UiPrefs.timelineOpen,
+            enter = expandVertically(expandFrom = if (UiPrefs.timelineTop) Alignment.Top else Alignment.Bottom),
+            exit = shrinkVertically(shrinkTowards = if (UiPrefs.timelineTop) Alignment.Top else Alignment.Bottom)
+        ) { timeline() }
+    }
+    val slideTools: @Composable () -> Unit = {
+        AnimatedVisibility(
+            !focus && UiPrefs.toolsOpen,
+            enter = expandHorizontally(expandFrom = if (UiPrefs.toolsRight) Alignment.End else Alignment.Start),
+            exit = shrinkHorizontally(shrinkTowards = if (UiPrefs.toolsRight) Alignment.End else Alignment.Start)
+        ) { tools() }
+    }
+    val slideLayers: @Composable () -> Unit = {
+        AnimatedVisibility(
+            !focus && showLayers,
+            enter = expandHorizontally(expandFrom = if (UiPrefs.layersLeft) Alignment.End else Alignment.Start),
+            exit = shrinkHorizontally(shrinkTowards = if (UiPrefs.layersLeft) Alignment.End else Alignment.Start)
+        ) { layers() }
+    }
+
     Column(Modifier.fillMaxSize().background(Pal.bg).systemBarsPadding()) {
         if (!focus) EditorTopBar(
             ctl, onBack = exit, onDialog = { dialog = it }, showLayers = showLayers,
-            onToggleLayers = { showLayers = !showLayers }, onFocus = { focus = true }
+            onToggleLayers = toggleLayers, onFocus = { focus = true },
+            onToggleTools = toggleTools, onToggleTimeline = toggleTimeline
         )
-        if (!focus && UiPrefs.timelineTop) timeline()
+        if (UiPrefs.timelineTop) slideTimeline()
         Row(Modifier.weight(1f)) {
-            if (!focus && showLayers && UiPrefs.layersLeft) layers()
-            if (!focus && !UiPrefs.toolsRight) tools()
+            if (sideLayers && UiPrefs.layersLeft) slideLayers()
+            if (!UiPrefs.toolsRight) slideTools()
             Box(Modifier.weight(1f).fillMaxHeight().clipToBounds()) {
                 AndroidView(
                     factory = { DrawingView(it, ctl) },
@@ -158,15 +204,32 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
                     update = { v -> ctl.renderKey(); ctl.overlayKey(); v.sync() }
                 )
                 if (UiPrefs.showSliders && ctl.tool in setOf(Tool.BRUSH, Tool.ERASER, Tool.LINE, Tool.RECT, Tool.ELLIPSE)) {
+                    val edge = if (tabs) 26.dp else 8.dp
                     BrushSliders(
                         ctl,
-                        if (UiPrefs.slidersRight) Modifier.align(Alignment.CenterEnd).padding(end = 8.dp) else Modifier.align(Alignment.CenterStart).padding(start = 8.dp)
+                        if (UiPrefs.slidersRight) Modifier.align(Alignment.CenterEnd).padding(end = edge) else Modifier.align(Alignment.CenterStart).padding(start = edge)
                     )
                 }
-                if (!focus) ContextBar(
-                    ctl, Modifier.align(if (UiPrefs.contextBarBottom) Alignment.BottomCenter else Alignment.TopCenter).padding(6.dp),
-                    onImportBrushes = importBrushes, onBrushDialog = { dialog = Dlg.BRUSH }, onInstance = { dialog = Dlg.INSTANCE }, onAlign = { dialog = Dlg.ALIGN }
-                )
+                if (!focus) {
+                    val barAlign = if (UiPrefs.contextBarBottom) Alignment.BottomCenter else Alignment.TopCenter
+                    // язычок таймлайна у того же края — не даём панели параметров на него налезть
+                    val sameEdge = tabs && UiPrefs.contextBarBottom != UiPrefs.timelineTop
+                    val barPad = if (sameEdge) (if (UiPrefs.contextBarBottom) Modifier.padding(bottom = 20.dp) else Modifier.padding(top = 20.dp)) else Modifier
+                    if (UiPrefs.contextOpen) ContextBar(
+                        ctl, Modifier.align(barAlign).then(barPad).padding(6.dp),
+                        onImportBrushes = importBrushes, onBrushDialog = { dialog = Dlg.BRUSH }, onInstance = { dialog = Dlg.INSTANCE }, onAlign = { dialog = Dlg.ALIGN },
+                        onCollapse = { UiPrefs.contextOpen = false; UiPrefs.save() }
+                    ) else Surface(
+                        shape = RoundedCornerShape(14.dp), color = Pal.panel.copy(alpha = UiPrefs.panelAlpha), shadowElevation = 6.dp,
+                        modifier = Modifier.align(barAlign).then(barPad).padding(6.dp).clip(RoundedCornerShape(14.dp))
+                            .clickable { UiPrefs.contextOpen = true; UiPrefs.save() }
+                    ) {
+                        Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Tune, null, tint = Pal.text, modifier = Modifier.size(18.dp))
+                            Text("  ${ctl.tool.title}", fontSize = 12.sp, color = Pal.text)
+                        }
+                    }
+                }
                 if (ctl.editStack.isNotEmpty()) Surface(
                     shape = RoundedCornerShape(16.dp), color = Pal.accent.copy(alpha = 0.9f),
                     modifier = Modifier.align(Alignment.BottomStart).padding(8.dp)
@@ -208,11 +271,43 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
                     Modifier.align(Alignment.TopEnd).padding(10.dp).background(Color(0x99000000), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 3.dp),
                     color = Color.White, fontSize = 12.sp
                 )
+
+                // язычки выдвижных панелей: нажать или потянуть
+                if (tabs) {
+                    val toolsSide = if (UiPrefs.toolsRight) Side.RIGHT else Side.LEFT
+                    PanelTab(toolsSide, UiPrefs.toolsOpen, "Инструменты", Modifier.align(BiasAlignment(toolsSide.x, 0.2f))) { toggleTools() }
+                    val tlSide = if (UiPrefs.timelineTop) Side.TOP else Side.BOTTOM
+                    PanelTab(tlSide, UiPrefs.timelineOpen, "Таймлайн", Modifier.align(BiasAlignment(0.55f, tlSide.y))) { toggleTimeline() }
+                    if (sideLayers) {
+                        val ls = if (UiPrefs.layersLeft) Side.LEFT else Side.RIGHT
+                        PanelTab(ls, showLayers, "Слои", Modifier.align(BiasAlignment(ls.x, 0.6f))) { toggleLayers() }
+                    }
+                }
+                // слои поверх холста: выезжают с края вместе со своим язычком
+                if (!sideLayers && !focus) {
+                    val left = UiPrefs.layersLeft
+                    Row(Modifier.align(if (left) Alignment.CenterStart else Alignment.CenterEnd).fillMaxHeight()) {
+                        val tab: @Composable () -> Unit = {
+                            if (UiPrefs.showPanelTabs) Box(Modifier.fillMaxHeight()) {
+                                PanelTab(if (left) Side.LEFT else Side.RIGHT, showLayers, "Слои", Modifier.align(BiasAlignment(0f, 0.6f))) { toggleLayers() }
+                            }
+                        }
+                        if (!left) tab()
+                        AnimatedVisibility(
+                            showLayers,
+                            enter = slideInHorizontally { if (left) -it else it } + fadeIn(),
+                            exit = slideOutHorizontally { if (left) -it else it } + fadeOut()
+                        ) {
+                            Surface(shadowElevation = 12.dp, color = Pal.panel) { layers() }
+                        }
+                        if (left) tab()
+                    }
+                }
             }
-            if (!focus && UiPrefs.toolsRight) tools()
-            if (!focus && showLayers && !UiPrefs.layersLeft) layers()
+            if (UiPrefs.toolsRight) slideTools()
+            if (sideLayers && !UiPrefs.layersLeft) slideLayers()
         }
-        if (!focus && !UiPrefs.timelineTop) timeline()
+        if (!UiPrefs.timelineTop) slideTimeline()
     }
 
     if (ctl.textRequest != null) TextEntryDialog("", onDone = { ctl.addText(it) }, onCancel = { ctl.textRequest = null })
@@ -252,6 +347,51 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
     }
 }
 
+/** Край холста, к которому прижата панель. x/y — смещение для BiasAlignment. */
+enum class Side(val x: Float, val y: Float) { LEFT(-1f, 0f), RIGHT(1f, 0f), TOP(0f, -1f), BOTTOM(0f, 1f) }
+
+/**
+ * Язычок выдвижной панели у края холста: нажатие — свернуть/развернуть,
+ * свайп от края — выдвинуть, к краю — задвинуть.
+ */
+@Composable
+private fun PanelTab(side: Side, open: Boolean, desc: String, modifier: Modifier, onToggle: () -> Unit) {
+    val vertical = side == Side.LEFT || side == Side.RIGHT
+    val shape = when (side) {
+        Side.LEFT -> RoundedCornerShape(topEnd = 10.dp, bottomEnd = 10.dp)
+        Side.RIGHT -> RoundedCornerShape(topStart = 10.dp, bottomStart = 10.dp)
+        Side.TOP -> RoundedCornerShape(bottomStart = 10.dp, bottomEnd = 10.dp)
+        Side.BOTTOM -> RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp)
+    }
+    // стрелка показывает, куда поедет панель
+    val icon = when (side) {
+        Side.LEFT -> if (open) Icons.AutoMirrored.Filled.KeyboardArrowLeft else Icons.AutoMirrored.Filled.KeyboardArrowRight
+        Side.RIGHT -> if (open) Icons.AutoMirrored.Filled.KeyboardArrowRight else Icons.AutoMirrored.Filled.KeyboardArrowLeft
+        Side.TOP -> if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown
+        Side.BOTTOM -> if (open) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp
+    }
+    val sign = if (side == Side.LEFT || side == Side.TOP) 1f else -1f   // знак свайпа «выдвинуть»
+    val cur by rememberUpdatedState(open)
+    val toggle by rememberUpdatedState(onToggle)
+    Box(
+        modifier
+            .size(if (vertical) 22.dp else 64.dp, if (vertical) 64.dp else 22.dp)
+            .clip(shape)
+            .background(Pal.panel.copy(alpha = 0.88f))
+            .border(1.dp, Pal.panel2, shape)
+            .clickable { toggle() }
+            .pointerInput(side) {
+                var acc = 0f
+                val end: () -> Unit = { if (acc * sign > 24f && !cur) toggle() else if (acc * sign < -24f && cur) toggle() }
+                if (vertical) detectHorizontalDragGestures(onDragStart = { acc = 0f }, onDragEnd = end) { ch, d -> ch.consume(); acc += d }
+                else detectVerticalDragGestures(onDragStart = { acc = 0f }, onDragEnd = end) { ch, d -> ch.consume(); acc += d }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, (if (open) "Скрыть: " else "Показать: ") + desc, tint = Pal.text, modifier = Modifier.size(18.dp))
+    }
+}
+
 @Composable
 fun SmallBtn(text: String, selected: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
     Surface(
@@ -273,7 +413,7 @@ fun IconBtn(icon: ImageVector, desc: String, selected: Boolean = false, tint: Co
 }
 
 @Composable
-private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (Dlg) -> Unit, showLayers: Boolean, onToggleLayers: () -> Unit, onFocus: () -> Unit) {
+private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (Dlg) -> Unit, showLayers: Boolean, onToggleLayers: () -> Unit, onFocus: () -> Unit, onToggleTools: () -> Unit = {}, onToggleTimeline: () -> Unit = {}) {
     var menu by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().height(50.dp).background(Pal.panel).padding(horizontal = 4.dp),
@@ -325,6 +465,9 @@ private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (D
                     if (ctl.project.guidesX.isNotEmpty() || ctl.project.guidesY.isNotEmpty()) DropdownMenuItem(text = { Text("Убрать направляющие") }, onClick = { ctl.clearGuides(); menu = false })
                     CheckItem("Звук при перемотке", ctl.audioScrub) { ctl.audioScrub = !ctl.audioScrub }
                     if (!showLayers || !UiPrefs.visible(TopButton.LAYERS)) CheckItem("Панель слоёв", showLayers) { onToggleLayers() }
+                    CheckItem("Панель инструментов", UiPrefs.toolsOpen) { onToggleTools() }
+                    CheckItem("Таймлайн", UiPrefs.timelineOpen) { onToggleTimeline() }
+                    CheckItem("Параметры инструмента", UiPrefs.contextOpen) { UiPrefs.contextOpen = !UiPrefs.contextOpen; UiPrefs.save() }
                     if (!UiPrefs.visible(TopButton.EXPORT)) DropdownMenuItem(text = { Text("Экспорт…") }, onClick = { menu = false; onDialog(Dlg.EXPORT) })
                     DropdownMenuItem(text = { Text("Параметры проекта…") }, onClick = { menu = false; onDialog(Dlg.PROJECT) })
                     DropdownMenuItem(text = { Text("Сохранить сейчас") }, onClick = { menu = false; ctl.saveAsync { ctl.toast("Сохранено") } })
@@ -398,9 +541,11 @@ private fun BrushSliders(ctl: EditorController, modifier: Modifier) {
 }
 
 @Composable
-private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushes: () -> Unit, onBrushDialog: () -> Unit, onInstance: () -> Unit, onAlign: () -> Unit = {}) {
+private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushes: () -> Unit, onBrushDialog: () -> Unit, onInstance: () -> Unit, onAlign: () -> Unit = {}, onCollapse: () -> Unit = {}) {
     ctl.version
     Surface(modifier, shape = RoundedCornerShape(14.dp), color = Pal.panel.copy(alpha = UiPrefs.panelAlpha), shadowElevation = 6.dp) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        IconBtn(if (UiPrefs.contextBarBottom) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp, "Свернуть параметры", size = 32, onClick = onCollapse)
         Row(
             Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -551,6 +696,7 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                 }
             }
         }
+      }
     }
 }
 

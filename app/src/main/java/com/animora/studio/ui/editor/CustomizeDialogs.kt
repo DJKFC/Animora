@@ -151,6 +151,8 @@ fun UiSettingsDialog(onDismiss: () -> Unit) {
             PrefSwitch("Показывать ползунки размера и прозрачности", u.showSliders) { v -> set { u.showSliders = v } }
             PrefSwitch("Подписи под инструментами", u.showToolLabels) { v -> set { u.showToolLabels = v } }
             PrefSwitch("Открывать панель слоёв при запуске", u.layersOpenByDefault) { v -> set { u.layersOpenByDefault = v } }
+            PrefSwitch("Слои выезжают поверх холста", u.layersOverlay) { v -> set { u.layersOverlay = v } }
+            PrefSwitch("Язычки для выдвижения панелей", u.showPanelTabs) { v -> set { u.showPanelTabs = v } }
 
             SectionTitle("Размеры")
             PrefSlider("Кнопки инструментов: ${u.toolSize} dp", u.toolSize.toFloat(), 34f..60f) { v -> set { u.toolSize = v.roundToInt() } }

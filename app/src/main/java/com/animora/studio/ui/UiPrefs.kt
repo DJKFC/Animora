@@ -45,6 +45,13 @@ object UiPrefs {
     var workspace by mutableIntStateOf(0xFF24222E.toInt())
     var tools by mutableStateOf(Tool.entries.toList())
     var hiddenTop by mutableStateOf(setOf<TopButton>())
+    // выдвижные панели: свёрнуты/развёрнуты (запоминается между запусками)
+    var toolsOpen by mutableStateOf(true)
+    var timelineOpen by mutableStateOf(true)
+    var contextOpen by mutableStateOf(true)
+    /** Панель слоёв выезжает поверх холста, а не сжимает его (удобно на телефоне). */
+    var layersOverlay by mutableStateOf(false)
+    var showPanelTabs by mutableStateOf(true)
 
     fun init(ctx: Context) {
         if (sp != null) return
@@ -57,7 +64,13 @@ object UiPrefs {
         contextBarBottom = p.getBoolean("contextBarBottom", false)
         showSliders = p.getBoolean("showSliders", true)
         showToolLabels = p.getBoolean("showToolLabels", false)
-        layersOpenByDefault = p.getBoolean("layersOpen", true)
+        val narrow = ctx.resources.configuration.smallestScreenWidthDp < 600
+        layersOpenByDefault = p.getBoolean("layersOpen", !narrow)
+        layersOverlay = p.getBoolean("layersOverlay", narrow)
+        toolsOpen = p.getBoolean("toolsOpen", true)
+        timelineOpen = p.getBoolean("timelineOpen", true)
+        contextOpen = p.getBoolean("contextOpen", true)
+        showPanelTabs = p.getBoolean("showPanelTabs", true)
         toolSize = p.getInt("toolSize", 42)
         layersWidth = p.getInt("layersWidth", 240)
         timelineRows = p.getInt("timelineRows", 5)
@@ -91,6 +104,8 @@ object UiPrefs {
             .putFloat("panelAlpha", panelAlpha).putInt("accent", accent).putInt("workspace", workspace)
             .putString("tools", tools.joinToString(",") { it.name }).putInt("toolsVer", 3)
             .putString("hiddenTop", hiddenTop.joinToString(",") { it.name })
+            .putBoolean("toolsOpen", toolsOpen).putBoolean("timelineOpen", timelineOpen).putBoolean("contextOpen", contextOpen)
+            .putBoolean("layersOverlay", layersOverlay).putBoolean("showPanelTabs", showPanelTabs)
             .apply()
     }
 
@@ -114,11 +129,11 @@ object UiPrefs {
             UiPreset.DEFAULT -> {}
             UiPreset.LEFTY -> { toolsRight = true; layersLeft = true; slidersRight = true }
             UiPreset.MINIMAL -> {
-                showSliders = false; layersOpenByDefault = false; timelineRows = 2; toolSize = 38
+                showSliders = false; layersOpenByDefault = false; layersOverlay = true; timelineRows = 2; toolSize = 38
                 tools = listOf(Tool.BRUSH, Tool.ERASER, Tool.FILL, Tool.LASSO, Tool.HAND)
                 hiddenTop = setOf(TopButton.PLAY_MODE, TopButton.ONION_SETTINGS)
             }
-            UiPreset.TABLET -> { timelineRows = 7; layersWidth = 300; toolSize = 46; timelineCell = 26; showToolLabels = true }
+            UiPreset.TABLET -> { layersOverlay = false; timelineRows = 7; layersWidth = 300; toolSize = 46; timelineCell = 26; showToolLabels = true }
             UiPreset.BIG -> { toolSize = 56; timelineCell = 30; timelineRows = 4; showToolLabels = true }
         }
         save()
@@ -130,6 +145,7 @@ object UiPrefs {
         toolSize = 42; layersWidth = 240; timelineRows = 5; timelineCell = 22; panelAlpha = 0.95f
         accent = 0xFF8B7CFF.toInt(); workspace = 0xFF24222E.toInt()
         tools = Tool.entries.toList(); hiddenTop = emptySet()
+        toolsOpen = true; timelineOpen = true; contextOpen = true; showPanelTabs = true
         if (saveNow) save()
     }
 
