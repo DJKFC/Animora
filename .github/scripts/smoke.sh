@@ -95,5 +95,18 @@ adb shell input keyevent 4; sleep 2
 crashcheck curves
 tap "Ещё"; sleep 2; tap "Настроить интерфейс…"; sleep 3; tap "Стандарт"; sleep 2; tap "Закрыть"; sleep 2
 crashcheck ui_reset
+# камера и lip-sync (этап 1)
+tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
+tap "Камера"; sleep 3
+adb shell input swipe $((W/2)) $((H/2)) $((W*7/10)) $((H*6/10)) 400; sleep 2
+tap "+ Ключ"; sleep 1
+for i in 1 2 3; do adb shell input swipe $((W*8/10)) $((H*93/100)) $((W*3/10)) $((H*93/100)) 150; sleep 0.5; done
+adb shell input swipe $((W/2)) $((H/2)) $((W*4/10)) $((H*4/10)) 400; sleep 2; shot camera
+crashcheck camera
+tap "Ещё"; sleep 2; tap "Lip-sync по звуку…"; sleep 3; shot lipsync; tap "Отмена"; sleep 2
+crashcheck lipsync
+tap "Воспроизвести"; sleep 4; tap "Воспроизвести"; sleep 1
+crashcheck camera_play
+adb shell input keyevent 4; sleep 4
 adb logcat -d > out/logcat.txt
 exit 0

@@ -27,6 +27,8 @@ import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Visibility
@@ -64,7 +66,10 @@ import androidx.compose.ui.unit.sp
 import com.animora.studio.model.Easing
 import com.animora.studio.model.LayerType
 import com.animora.studio.model.TweenType
+import com.animora.studio.engine.AudioCache
 import com.animora.studio.ui.Pal
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.animora.studio.ui.UiPrefs
 import kotlin.math.max
 import kotlin.math.min
@@ -95,6 +100,15 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
     val sx: () -> Float = { scrollX }
 
     LaunchedEffect(maxScroll) { scrollX = scrollX.coerceIn(0f, maxScroll) }
+    // волна звука строится в фоне; после загрузки таймлайн перерисуется
+    var peaksTick by remember { mutableIntStateOf(0) }
+    val clips = layers.mapNotNull { it.audio }
+    LaunchedEffect(clips.map { it.id }) {
+        clips.filter { AudioCache.cachedPeaks(it) == null }.forEach { c ->
+            withContext(Dispatchers.IO) { AudioCache.peaks(ctl.audioDir, c) }
+            peaksTick++
+        }
+    }
     LaunchedEffect(ctl.frame, viewW) {
         val x = ctl.frame * cellPx
         if (viewW > 0 && (x < scrollX || x > scrollX + viewW - cellPx * 2)) scrollX = (x - viewW / 3f).coerceIn(0f, maxNow)
@@ -122,7 +136,12 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
                                 Modifier.padding(horizontal = 4.dp).size(16.dp).clickable { ctl.updateLayer(l.id) { it.visible = !it.visible } },
                                 tint = if (l.visible) Pal.dim else Pal.pink
                             )
-                            if (l.type == LayerType.BONES) Icon(Icons.Filled.AccountTree, null, Modifier.size(13.dp), tint = Pal.accent2)
+                            when (l.type) {
+                                LayerType.BONES -> Icon(Icons.Filled.AccountTree, null, Modifier.size(13.dp), tint = Pal.accent2)
+                                LayerType.AUDIO -> Icon(Icons.Filled.MusicNote, null, Modifier.size(13.dp), tint = Pal.shape)
+                                LayerType.CAMERA -> Icon(Icons.Filled.Videocam, null, Modifier.size(13.dp), tint = Pal.accent2)
+                                else -> {}
+                            }
                             Text(l.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (l.guide) Pal.dim else Pal.text)
                         }
                     }
@@ -135,7 +154,7 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
                 Column(Modifier.fillMaxWidth()) {
                     TimelineHeader(ctl, cellPx, sx, viewW, Modifier.fillMaxWidth().height(HEAD_H))
                     Box(Modifier.verticalScroll(vs)) {
-                        TimelineGrid(ctl, cellPx, sx, viewW, onMore, Modifier.fillMaxWidth().height(ROW_H * max(rows, 1)))
+                        TimelineGrid(ctl, cellPx, sx, viewW, onMore, Modifier.fillMaxWidth().height(ROW_H * max(rows, 1)), peaksTick)
                     }
                 }
             }
@@ -191,7 +210,7 @@ private fun Modifier.pointerInputScrub(ctl: EditorController, cellPx: Float, sx:
 }
 
 @Composable
-private fun TimelineGrid(ctl: EditorController, cellPx: Float, sx: () -> Float, viewW: Int, onMore: () -> Unit, modifier: Modifier) {
+private fun TimelineGrid(ctl: EditorController, cellPx: Float, sx: () -> Float, viewW: Int, onMore: () -> Unit, modifier: Modifier, peaksTick: Int = 0) {
     val scroll by rememberUpdatedState(sx)
     ctl.version
     val p = ctl.project
@@ -218,6 +237,7 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, sx: () -> Float, 
         }
     ) {
         val fc = p.frameCount
+        if (peaksTick < 0) return@Canvas // читаем peaksTick, чтобы перерисоваться после загрузки волны
         val scrollX = sx()
         val f0 = max(0, (scrollX / cellPx).toInt() - 2)
         val f1 = min(fc, ((scrollX + viewW) / cellPx).toInt() + 3)
@@ -232,7 +252,29 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, sx: () -> Float, 
             }
             drawLine(Pal.line, Offset(0f, y + rowPx), Offset(fc * cellPx, y + rowPx), 1f)
             val cy = y + rowPx / 2
-            if (l.type == LayerType.DRAWING) {
+            if (l.type == LayerType.AUDIO) {
+                val clip = l.audio
+                val peaks = clip?.let { AudioCache.cachedPeaks(it) }
+                if (clip != null) {
+                    val fps = p.fps
+                    val cs = clip.startFrame; val ce = clip.endFrame(fps)
+                    drawRect(Pal.shape.copy(alpha = if (clip.muted) 0.08f else 0.18f), Offset(cs * cellPx, y + 2), Size((ce - cs) * cellPx, rowPx - 4))
+                    if (peaks != null) {
+                        val mid = y + rowPx / 2
+                        val perFrame = AudioCache.PEAKS_PER_SEC.toFloat() / fps
+                        // по 3 столбика на кадр — видно слоги
+                        for (f in max(f0, cs) until min(f1, ce)) for (sub in 0 until 3) {
+                            val t0 = (f - cs + sub / 3f) * perFrame + clip.offsetMs / 10f
+                            val a = t0.toInt(); val b = (t0 + perFrame / 3f).toInt() + 1
+                            var m = 0f
+                            for (j in a until min(b, peaks.size)) if (j >= 0) m = max(m, peaks[j])
+                            val hgt = m * (rowPx - 6) * clip.volume.coerceAtMost(1.5f)
+                            val x = f * cellPx + sub * cellPx / 3f + cellPx / 6f
+                            drawLine(if (clip.muted) Pal.dim else Pal.shape, Offset(x, mid - hgt / 2), Offset(x, mid + hgt / 2), max(1.5f, cellPx / 4f))
+                        }
+                    }
+                }
+            } else if (l.type == LayerType.DRAWING || l.type == LayerType.CAMERA) {
                 val keys = l.keyframes.entries.toList()
                 keys.forEachIndexed { i, (k, kf) ->
                     val end = if (i + 1 < keys.size) keys[i + 1].key else fc
@@ -311,7 +353,7 @@ private fun TimelineControls(ctl: EditorController, onMore: () -> Unit, onCurves
         SmallBtn("+ Кадр") { ctl.insertFrame(allLayers = true) }
         SmallBtn("− Кадр") { ctl.removeFrame(allLayers = true) }
         Spacer(Modifier.width(8.dp))
-        if (layer?.type == LayerType.DRAWING) {
+        if (layer?.type == LayerType.DRAWING || layer?.type == LayerType.CAMERA) {
             Text("Твин:", fontSize = 12.sp, color = Pal.dim)
             TweenType.entries.forEach { t -> SmallBtn(t.title, selected = held?.second?.tween == t) { ctl.setTween(t) } }
         }

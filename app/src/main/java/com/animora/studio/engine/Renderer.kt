@@ -38,6 +38,8 @@ class FrameOptions(
     val onionOpacity: Float = 0.35f,
     val onionAllLayers: Boolean = false,
     val onionKeysOnly: Boolean = true,
+    /** В редакторе — показывать фигуры масок полупрозрачными. */
+    val maskPreview: Boolean = false,
     val onionTint: Boolean = true,
     val activeLayerId: String? = null,
     val onlyLayerId: String? = null
@@ -94,7 +96,31 @@ class Renderer {
         fun layerMatrix(project: Project, layer: Layer, frame: Int): Matrix {
             val m = (keyTransformAt(layer, frame) ?: Transform()).matrix()
             Bones.bindMatrix(project, layer, frame)?.let { m.postConcat(it) }
+            cameraMatrix(project, frame, layer.depth)?.let { m.postConcat(it) }
             return m
+        }
+
+        /** Активный слой камеры (первый видимый). */
+        fun cameraLayer(project: Project): Layer? = project.layers.firstOrNull { it.type == LayerType.CAMERA && it.visible }
+
+        /**
+         * Матрица камеры: сцена → кадр. tx/ty — панорама, sx — зум, rot — поворот.
+         * depth > 0 — слой дальше, двигается и масштабируется меньше (параллакс); depth < 0 — закреплён на экране.
+         */
+        fun cameraMatrix(project: Project, frame: Int, depth: Float = 0f): Matrix? {
+            if (depth < 0f) return null
+            val cam = cameraLayer(project) ?: return null
+            val t = keyTransformAt(cam, frame) ?: return null
+            if (t.tx == 0f && t.ty == 0f && t.rot == 0f && t.sx == 1f) return null
+            val k = 1f / (1f + depth)
+            val cx = project.width / 2f; val cy = project.height / 2f
+            val zoom = max(0.01f, 1f + (t.sx - 1f) * k)
+            return Matrix().apply {
+                setTranslate(-(cx + t.tx * k), -(cy + t.ty * k))
+                postRotate(-t.rot)
+                postScale(zoom, zoom)
+                postTranslate(cx, cy)
+            }
         }
 
         fun resolve(project: Project, layer: Layer, frame: Int): Resolved? {
@@ -110,6 +136,7 @@ class Renderer {
             }
             val m = tr.matrix()
             Bones.bindMatrix(project, layer, frame)?.let { m.postConcat(it) }
+            cameraMatrix(project, frame, layer.depth)?.let { m.postConcat(it) }
             return Resolved(elements, m, tr.alpha)
         }
     }
@@ -134,10 +161,26 @@ class Renderer {
             if (layer.type != LayerType.DRAWING || !layer.visible) continue
             if (opt.onlyLayerId != null && layer.id != opt.onlyLayerId) continue
             if (layer.guide && !opt.includeGuides) continue
+            if (layer.isMask) {
+                // маска не выводится; в редакторе — лёгкая голубая подсказка формы
+                if (opt.maskPreview) drawLayer(c, p, layer, frame, 0.25f, 0xFF4FC3F7.toInt())
+                continue
+            }
             if (opt.onion && (opt.onionAllLayers || layer.id == opt.activeLayerId)) drawOnion(c, p, layer, frame, opt)
+            val mask = p.layer(layer.maskedBy)?.takeIf { it.isMask && it.visible && it.type == LayerType.DRAWING }
+            if (mask == null) { drawLayer(c, p, layer, frame, 1f, null); continue }
+            val s1 = c.saveLayer(null, null)
             drawLayer(c, p, layer, frame, 1f, null)
+            maskPaint.reset(); maskPaint.xfermode = dstIn
+            val s2 = c.saveLayer(null, maskPaint)
+            drawLayer(c, p, mask, frame, 1f, null, forMask = true)
+            c.restoreToCount(s2)
+            c.restoreToCount(s1)
         }
     }
+
+    private val maskPaint = Paint()
+    private val dstIn = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
 
     private fun drawOnion(c: Canvas, p: Project, layer: Layer, frame: Int, opt: FrameOptions) {
         val prev = ArrayList<Int>(); val next = ArrayList<Int>()
@@ -161,11 +204,11 @@ class Renderer {
         }
     }
 
-    fun drawLayer(c: Canvas, p: Project, layer: Layer, frame: Int, alphaMul: Float, tint: Int?) {
+    fun drawLayer(c: Canvas, p: Project, layer: Layer, frame: Int, alphaMul: Float, tint: Int?, forMask: Boolean = false) {
         val r = resolve(p, layer, frame) ?: return
         if (r.elements.isEmpty()) return
-        val alpha = layer.opacity * r.alpha * alphaMul
-        val needsLayer = tint != null || alpha < 0.999f || layer.blend.mode != null ||
+        val alpha = if (forMask) 1f else layer.opacity * r.alpha * alphaMul
+        val needsLayer = tint != null || alpha < 0.999f || (layer.blend.mode != null && !forMask) ||
             r.elements.any { it is StrokeElement && it.kind == BrushKind.ERASER }
         if (!needsLayer) {
             val s = c.save(); c.concat(r.matrix)
@@ -175,7 +218,7 @@ class Renderer {
         }
         layerPaint.reset()
         layerPaint.alpha = (255 * alpha).toInt().coerceIn(0, 255)
-        layerPaint.xfermode = if (tint == null) layer.blend.mode?.let { PorterDuffXfermode(it) } else null
+        layerPaint.xfermode = if (tint == null && !forMask) layer.blend.mode?.let { PorterDuffXfermode(it) } else null
         val save = c.saveLayer(null, layerPaint)
         c.concat(r.matrix)
         for (e in r.elements) drawElement(c, e)

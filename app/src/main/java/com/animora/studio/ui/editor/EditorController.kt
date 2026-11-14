@@ -17,6 +17,8 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.animora.studio.engine.AudioCache
+import com.animora.studio.engine.AudioPlayback
 import com.animora.studio.engine.Bones
 import com.animora.studio.engine.FloodFill
 import com.animora.studio.engine.FrameOptions
@@ -29,6 +31,7 @@ import com.animora.studio.engine.normalizeDeg
 import com.animora.studio.engine.pointInPolygon
 import com.animora.studio.export.ExportSettings
 import com.animora.studio.export.Exporter
+import com.animora.studio.model.AudioClip
 import com.animora.studio.model.BitmapElement
 import com.animora.studio.model.Bone
 import com.animora.studio.model.BrushLibrary
@@ -282,7 +285,10 @@ class EditorController(
     // ---------------- кадры / ключи ----------------
     fun seek(f: Int) {
         val nf = f.coerceIn(0, project.frameCount - 1)
-        if (nf != frame) { frame = nf; selection = null }
+        if (nf != frame) {
+            frame = nf; selection = null
+            if (!playing && audioScrub) audioPlayback.scrub(project, nf)
+        }
     }
 
     fun editableLayer(silent: Boolean = false): Layer? {
@@ -372,7 +378,10 @@ class EditorController(
         if (project.frameCount >= MAX_FRAMES) { toast("Максимум $MAX_FRAMES кадров"); return }
         checkpoint()
         val targets = if (allLayers) project.layers else listOfNotNull(activeLayer)
-        targets.forEach { shiftKeys(it.keyframes, frame, 1); shiftPoses(it.poses, frame, 1) }
+        targets.forEach {
+            shiftKeys(it.keyframes, frame, 1); shiftPoses(it.poses, frame, 1)
+            it.audio?.let { c -> if (c.startFrame > frame) it.audio = c.copy(startFrame = c.startFrame + 1) }
+        }
         project.frameCount += 1
         rangeTo = project.frameCount - 1
         changed()
@@ -383,6 +392,7 @@ class EditorController(
         checkpoint()
         val targets = if (allLayers) project.layers else listOfNotNull(activeLayer)
         for (l in targets) {
+            l.audio?.let { c -> if (c.startFrame > frame) l.audio = c.copy(startFrame = c.startFrame - 1) }
             val old = TreeMap(l.keyframes); l.keyframes.clear()
             for ((k, v) in old) when {
                 k < frame -> l.keyframes[k] = v
@@ -542,6 +552,7 @@ class EditorController(
             val tr = Renderer.keyTransformAt(l, f) ?: Transform()
             val p = floatArrayOf(tr.px + tr.tx, tr.py + tr.ty)
             Bones.bindMatrix(project, l, f)?.mapPoints(p)
+            Renderer.cameraMatrix(project, f, l.depth)?.mapPoints(p)
             PointF(p[0], p[1])
         }
     }
@@ -609,6 +620,7 @@ class EditorController(
         val to = if (useRange) rangeTo else project.frameCount - 1
         if (frame !in from..to || (playMode == PlayMode.ONCE && frame == to)) frame = from
         var dir = 1
+        audioPlayback.start(project, frame)
         playJob = scope.launch {
             var next = SystemClock.uptimeMillis().toDouble()
             while (isActive && playing) {
@@ -617,16 +629,159 @@ class EditorController(
                 if (wait > 0) delay(wait) else yield()
                 var f = frame + dir
                 when (playMode) {
-                    PlayMode.LOOP -> if (f > to) f = from
-                    PlayMode.ONCE -> if (f > to) { f = to; playing = false }
-                    PlayMode.PINGPONG -> if (f > to || f < from) { dir = -dir; f = (frame + dir).coerceIn(from, to) }
+                    PlayMode.LOOP -> if (f > to) { f = from; audioPlayback.start(project, from) }
+                    PlayMode.ONCE -> if (f > to) { f = to; playing = false; audioPlayback.stop() }
+                    PlayMode.PINGPONG -> if (f > to || f < from) {
+                        dir = -dir; f = (frame + dir).coerceIn(from, to)
+                        // назад звук не играем
+                        if (dir > 0) audioPlayback.start(project, f) else audioPlayback.stop()
+                    }
                 }
                 frame = f
             }
         }
     }
 
-    fun stop() { playing = false; playJob?.cancel(); playJob = null }
+    fun stop() { playing = false; playJob?.cancel(); playJob = null; audioPlayback.stop() }
+
+    fun dispose() { stop(); audioPlayback.release() }
+
+    // ---------------- звук ----------------
+    val audioDir: java.io.File get() = store.audioDir(project.id)
+    private val audioPlayback = AudioPlayback { audioDir }
+    var audioScrub by mutableStateOf(true)
+
+    /** Импорт звука (mp3, m4a, ogg, wav, flac…) на новый звуковой слой с текущего кадра. */
+    fun importAudio(uri: Uri) {
+        busy = "Импорт звука…"
+        scope.launch {
+            val name = displayName(uri)
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val ext = name.substringAfterLast('.', "m4a").take(5).lowercase()
+                    val clipId = newIdLocal()
+                    val f = java.io.File(audioDir, "$clipId.$ext")
+                    appContext.contentResolver.openInputStream(uri)?.use { i -> f.outputStream().use { i.copyTo(it) } } ?: error("нет доступа к файлу")
+                    val clip = AudioClip(id = clipId, name = name.substringBeforeLast('.'), fileName = f.name, startFrame = frame, durationMs = 1)
+                    val pcm = AudioCache.pcm(audioDir, clip) ?: run { f.delete(); error("формат не поддерживается") }
+                    val c2 = clip.copy(durationMs = pcm.durationMs)
+                    AudioCache.peaks(audioDir, c2)
+                    c2
+                }
+            }
+            busy = null
+            res.onFailure { toast("Не удалось импортировать звук: ${it.message}") }
+            res.onSuccess { clip ->
+                checkpoint()
+                val l = Layer(name = "🔊 " + clip.name.take(24), type = LayerType.AUDIO, color = 0xFF3DDC97.toInt(), audio = clip)
+                project.layers.add(0, l)
+                val end = clip.endFrame(project.fps)
+                if (end > project.frameCount) {
+                    project.frameCount = end.coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1
+                    toast("Звук добавлен; длина анимации увеличена до ${project.frameCount} кадров")
+                } else toast("Звук добавлен: ${clip.durationMs / 1000.0} с")
+                activeLayerId = l.id
+                changed()
+            }
+        }
+    }
+
+    fun updateAudio(layerId: String, tag: String, f: (AudioClip) -> AudioClip) {
+        val l = project.layer(layerId) ?: return
+        val c = l.audio ?: return
+        checkpointOnce(tag + layerId)
+        l.audio = f(c)
+        changed()
+    }
+
+    private fun newIdLocal() = com.animora.studio.model.newId()
+
+    /**
+     * Автоматический lip-sync по громкости: на целевом слое расставляются ключи-копии форм рта
+     * (закрыт / чуть / средне / широко) из исходного слоя.
+     */
+    fun lipSync(audioLayerId: String, srcLayerId: String, shapes: List<Int?>, targetLayerId: String, sensitivity: Float) {
+        val al = project.layer(audioLayerId); val clip = al?.audio
+        val src = project.layer(srcLayerId); val target = project.layer(targetLayerId)
+        if (clip == null || src == null || target == null) { toast("Выберите звук, слой с формами рта и целевой слой"); return }
+        if (src.id == target.id) { toast("Целевой слой должен отличаться от слоя с формами рта"); return }
+        if (shapes.all { it == null }) { toast("Укажите хотя бы одну форму рта"); return }
+        busy = "Lip-sync…"
+        scope.launch {
+            val rms = withContext(Dispatchers.IO) { AudioCache.frameRms(audioDir, clip, project.fps) }
+            busy = null
+            if (rms == null || rms.isEmpty()) { toast("Не удалось прочитать звук"); return@launch }
+            val sorted = rms.sorted()
+            val ref = max(1e-4f, sorted[(sorted.size * 0.95f).toInt().coerceIn(0, sorted.size - 1)])
+            fun shapeFor(cls: Int): Int {
+                var best = -1; var bd = 99
+                shapes.forEachIndexed { i, f -> if (f != null && kotlin.math.abs(i - cls) < bd) { bd = kotlin.math.abs(i - cls); best = i } }
+                return shapes[best]!!
+            }
+            checkpoint()
+            val start = clip.startFrame
+            val end = clip.endFrame(project.fps)
+            if (end + 1 > project.frameCount) { project.frameCount = (end + 1).coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1 }
+            target.keyframes.keys.filter { it in start..end }.forEach { target.keyframes.remove(it) }
+            var cur = -1; var held = 0; var keys = 0
+            for (i in rms.indices) {
+                val v = rms[i] / ref * sensitivity
+                val cls = when { v < 0.12f -> 0; v < 0.35f -> 1; v < 0.65f -> 2; else -> 3 }
+                held++
+                if (cls != cur && (held >= 2 || cur < 0)) {
+                    val shapeFrame = shapeFor(cls)
+                    val k = src.keyframes.floorEntry(shapeFrame)?.value ?: continue
+                    target.keyframes[start + i] = k.copy().also { it.tween = TweenType.NONE }
+                    cur = cls; held = 0; keys++
+                }
+            }
+            src.keyframes.floorEntry(shapeFor(0))?.value?.let { target.keyframes[end] = it.copy().also { k -> k.tween = TweenType.NONE } }
+            changed(); toast("Lip-sync: расставлено $keys ключей на слое «${target.name}»")
+        }
+    }
+
+    // ---------------- камера ----------------
+    fun cameraLayer(): Layer? = Renderer.cameraLayer(project)
+    fun cameraMatrix(): Matrix? = Renderer.cameraMatrix(project, frame, 0f)
+
+    /** Ключ камеры в текущем кадре (создаётся копией текущего положения, с плавным твином). */
+    private fun cameraKey(l: Layer): Keyframe {
+        l.keyframes[frame]?.let { return it }
+        val tr = Renderer.keyTransformAt(l, frame) ?: Transform()
+        l.keyframes.floorEntry(frame)?.value?.let { if (it.tween == TweenType.NONE) { it.tween = TweenType.MOTION } }
+        val k = Keyframe(transform = tr, tween = TweenType.MOTION, easing = Easing.EASE_IN_OUT)
+        l.keyframes[frame] = k
+        return k
+    }
+
+    fun editCamera(tag: String, f: (Transform) -> Transform) {
+        val l = activeLayer?.takeIf { it.type == LayerType.CAMERA } ?: cameraLayer() ?: return
+        checkpointOnce(tag)
+        val k = cameraKey(l)
+        k.transform = f(k.transform)
+        changed()
+    }
+
+    private var camDragStart: Transform? = null
+
+    fun beginCameraDrag(x: Float, y: Float): Boolean {
+        val l = activeLayer?.takeIf { it.type == LayerType.CAMERA } ?: return false
+        checkpoint()
+        camDragStart = cameraKey(l).transform
+        dragStart.set(x, y)
+        return true
+    }
+
+    fun updateCameraDrag(x: Float, y: Float) {
+        val l = activeLayer?.takeIf { it.type == LayerType.CAMERA } ?: return
+        val st = camDragStart ?: return
+        val z = max(0.01f, st.sx)
+        // тянем кадр пальцем: сцена едет за пальцем, значит камера — в обратную сторону
+        l.keyframes[frame]?.transform = st.copy(tx = st.tx - (x - dragStart.x) / z, ty = st.ty - (y - dragStart.y) / z)
+        changed()
+    }
+
+    fun endCameraDrag() { camDragStart = null }
 
     // ---------------- рисование ----------------
     fun pushRecentColor(c: Int) {
@@ -988,6 +1143,7 @@ class EditorController(
         val tr = Renderer.keyTransformAt(l, frame) ?: return null
         val p = floatArrayOf(tr.px + tr.tx, tr.py + tr.ty)
         Bones.bindMatrix(project, l, frame)?.mapPoints(p)
+        Renderer.cameraMatrix(project, frame, l.depth)?.mapPoints(p)
         return PointF(p[0], p[1])
     }
 
@@ -1016,6 +1172,7 @@ class EditorController(
     }
 
     fun beginKeyTransform(x: Float, y: Float, tol: Float, rotOffset: Float): Boolean {
+        if (activeLayer?.type == LayerType.CAMERA) return beginCameraDrag(x, y)
         val l = editableLayer() ?: return false
         val bounds = keyContentBounds() ?: run { toast("Ключ пуст"); return false }
         val kind = hitHandles(bounds, x, y, tol, rotOffset) ?: DragKind.MOVE
@@ -1025,11 +1182,15 @@ class EditorController(
         ktKey = k; ktStart = k.transform; dragKind = kind
         dragStart.set(x, y)
         keyPivotDoc()?.let { ktPivotDoc.set(it.x, it.y) }
-        ktBoneInv = Bones.bindMatrix(project, l, frame)?.let { b -> Matrix().also { b.invert(it) } }
+        val post = Matrix()
+        Bones.bindMatrix(project, l, frame)?.let { post.postConcat(it) }
+        Renderer.cameraMatrix(project, frame, l.depth)?.let { post.postConcat(it) }
+        ktBoneInv = if (post.isIdentity) null else Matrix().also { post.invert(it) }
         return true
     }
 
     fun updateKeyTransform(x: Float, y: Float) {
+        if (camDragStart != null) { updateCameraDrag(x, y); return }
         val k = ktKey ?: return
         val st = ktStart
         k.transform = when (dragKind) {
@@ -1050,7 +1211,7 @@ class EditorController(
         changed()
     }
 
-    fun endKeyTransform() { ktKey = null }
+    fun endKeyTransform() { ktKey = null; endCameraDrag() }
 
     fun editKeyTransform(tag: String, f: (Transform) -> Transform) {
         val l = editableLayer() ?: return
@@ -1178,8 +1339,18 @@ class EditorController(
         checkpoint()
         val idx = project.layers.indexOfFirst { it.id == activeLayerId }.let { if (it < 0) project.layers.size else it + 1 }
         val n = project.layers.count { it.type == type } + 1
-        val l = Layer(name = if (type == LayerType.BONES) "Скелет $n" else "Слой $n", type = type, color = layerColors[project.layers.size % layerColors.size])
+        if (type == LayerType.CAMERA && project.layers.any { it.type == LayerType.CAMERA }) { toast("Камера уже есть"); project.layers.firstOrNull { it.type == LayerType.CAMERA }?.let { activeLayerId = it.id }; history.dropLast(); return }
+        val l = Layer(
+            name = when (type) { LayerType.BONES -> "Скелет $n"; LayerType.CAMERA -> "Камера"; LayerType.AUDIO -> "Звук $n"; else -> "Слой $n" },
+            type = type, color = if (type == LayerType.CAMERA) 0xFFFFC857.toInt() else layerColors[project.layers.size % layerColors.size]
+        )
         if (type == LayerType.DRAWING) l.keyframes[0] = Keyframe()
+        if (type == LayerType.CAMERA) {
+            l.keyframes[0] = Keyframe(tween = TweenType.MOTION, easing = Easing.EASE_IN_OUT)
+            project.layers.add(l); activeLayerId = l.id; tool = Tool.TRANSFORM
+            toast("Камера: тяните кадр инструментом «Трансформация», зум и поворот — на панели сверху")
+            changed(); return
+        }
         project.layers.add(idx, l)
         activeLayerId = l.id
         if (type == LayerType.BONES) { tool = Tool.BONE; toast("Проведите линию — это кость. Начните от конца кости — получится дочерняя") }
@@ -1191,6 +1362,7 @@ class EditorController(
         val l = project.layer(id) ?: return
         if (l.type == LayerType.BONES && tool !in listOf(Tool.BONE, Tool.POSE, Tool.HAND)) tool = Tool.POSE
         if (l.type == LayerType.DRAWING && (tool == Tool.BONE || tool == Tool.POSE)) tool = Tool.BRUSH
+        if (l.type == LayerType.CAMERA) tool = Tool.TRANSFORM
     }
 
     fun deleteLayer(id: String) {
@@ -1307,7 +1479,7 @@ class EditorController(
             val result = withContext(Dispatchers.Default) {
                 runCatching {
                     val json = if (settings.format == com.animora.studio.export.ExportFormat.PROJECT) Serializer.toJson(copy).toString() else null
-                    Exporter.export(appContext, copy, settings, json) { p -> scope.launch(Dispatchers.Main) { exportProgress = p } }
+                    Exporter.export(appContext, copy, settings, json, audioDir) { p -> scope.launch(Dispatchers.Main) { exportProgress = p } }
                 }
             }
             exportProgress = null

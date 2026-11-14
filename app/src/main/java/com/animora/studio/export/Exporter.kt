@@ -42,7 +42,7 @@ class ExportSettings(
 object Exporter {
 
     /** Возвращает Uri файла в «Загрузках». */
-    fun export(ctx: Context, project: Project, s: ExportSettings, projectJson: String?, progress: (Float) -> Unit): Uri {
+    fun export(ctx: Context, project: Project, s: ExportSettings, projectJson: String?, audioDir: java.io.File? = null, progress: (Float) -> Unit): Uri {
         val renderer = Renderer()
         val bgOn = !(s.transparent && s.format != ExportFormat.MP4) && project.bgType != BgType.TRANSPARENT
         val opt = FrameOptions(background = bgOn || (s.format == ExportFormat.MP4 && project.bgType != BgType.TRANSPARENT), includeGuides = s.includeGuides)
@@ -56,7 +56,9 @@ object Exporter {
             ExportFormat.MP4 -> {
                 val w = max(16, (project.width * s.scale).toInt() / 2 * 2)
                 val h = max(16, (project.height * s.scale).toInt() / 2 * 2)
-                val enc = VideoEncoder(tmp, w, h, project.fps)
+                // звук: сводим все звуковые слои на длину экспортируемого фрагмента (без пинг-понга)
+                val pcm = if (!s.pingPong && audioDir != null) com.animora.studio.engine.AudioMixer.mix(project, audioDir, s.from, frames.size) else null
+                val enc = VideoEncoder(tmp, w, h, project.fps, pcm)
                 frames.forEachIndexed { i, f ->
                     val b = render(f, true)
                     val bb = if (b.width != w || b.height != h) Bitmap.createScaledBitmap(b, w, h, true) else b

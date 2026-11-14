@@ -37,7 +37,7 @@ enum class BlendMode(val title: String, val mode: PorterDuff.Mode?) {
     ADD("Добавление", PorterDuff.Mode.ADD)
 }
 
-enum class LayerType { DRAWING, BONES }
+enum class LayerType { DRAWING, BONES, AUDIO, CAMERA }
 
 enum class BgType(val title: String) { SOLID("Цвет"), TRANSPARENT("Прозрачный"), PAPER("Бумага") }
 
@@ -249,12 +249,20 @@ class Layer(
     val bones: MutableList<Bone> = mutableListOf(),
     val poses: TreeMap<Int, Pose> = TreeMap(),
     var bindLayer: String? = null,
-    var bindBone: String? = null
+    var bindBone: String? = null,
+    /** Слой-маска: сам не выводится, а ограничивает видимость слоёв, привязанных к нему. */
+    var isMask: Boolean = false,
+    /** id слоя-маски, которым маскируется этот слой. */
+    var maskedBy: String? = null,
+    /** Глубина для камеры: 0 — обычно, больше — дальше (параллакс), −1 — закреплён на экране. */
+    var depth: Float = 0f,
+    /** Звуковой клип (для слоя типа AUDIO). */
+    var audio: AudioClip? = null
 ) {
     fun copy(freshId: Boolean = false): Layer {
         val l = Layer(
             if (freshId) newId() else id, name, type, visible, locked, opacity, blend, guide, color,
-            bindLayer = bindLayer, bindBone = bindBone
+            bindLayer = bindLayer, bindBone = bindBone, isMask = isMask, maskedBy = maskedBy, depth = depth, audio = audio
         )
         keyframes.forEach { (f, k) -> l.keyframes[f] = k.copy() }
         l.bones.addAll(bones)
@@ -303,4 +311,23 @@ class Project(
             0xFF26C6DA, 0xFF1E88E5, 0xFF3949AB, 0xFF8E24AA, 0xFFEC407A, 0xFF8D6E63, 0xFFFFE0BD, 0xFFF1C27D
         ).map { it.toInt() }
     }
+}
+
+/**
+ * Звуковой клип на слое. Файл лежит в папке проекта (audio/fileName).
+ * startFrame — кадр, с которого звучит; offsetMs — сколько отрезать от начала файла.
+ */
+data class AudioClip(
+    val id: String = newId(),
+    val name: String,
+    val fileName: String,
+    val startFrame: Int = 0,
+    val offsetMs: Long = 0,
+    val durationMs: Long,
+    val volume: Float = 1f,
+    val muted: Boolean = false
+) {
+    /** Длительность звучания в кадрах. */
+    fun frames(fps: Int): Int = (((durationMs - offsetMs).coerceAtLeast(0) * fps + 999) / 1000).toInt()
+    fun endFrame(fps: Int): Int = startFrame + frames(fps)
 }

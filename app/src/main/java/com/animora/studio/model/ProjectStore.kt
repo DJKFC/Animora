@@ -46,6 +46,9 @@ class ProjectStore(context: Context) {
         thumb?.let { b -> File(d, "thumb.png").outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 90, it) } }
     }
 
+    /** Папка звуковых файлов проекта. */
+    fun audioDir(projectId: String) = File(dir(projectId), "audio").apply { mkdirs() }
+
     fun load(id: String): Project = Serializer.fromJson(JSONObject(File(dir(id), "project.json").readText()))
 
     fun delete(id: String) { dir(id).deleteRecursively() }
@@ -61,6 +64,7 @@ class ProjectStore(context: Context) {
         json.put("id", nid); json.put("name", json.getString("name") + " (копия)")
         val p = Serializer.fromJson(json)
         p.modified = System.currentTimeMillis()
+        File(src, "audio").listFiles()?.forEach { f -> f.copyTo(File(audioDir(nid), f.name), overwrite = true) }
         save(p, File(src, "thumb.png").takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.path) })
     }
 
@@ -124,6 +128,15 @@ object Serializer {
         put("blend", l.blend.name); put("guide", l.guide); put("color", l.color)
         l.bindLayer?.let { put("bindLayer", it) }
         l.bindBone?.let { put("bindBone", it) }
+        if (l.isMask) put("isMask", true)
+        l.maskedBy?.let { put("maskedBy", it) }
+        if (l.depth != 0f) put("depth", l.depth.toDouble())
+        l.audio?.let { c ->
+            put("audio", JSONObject().apply {
+                put("id", c.id); put("name", c.name); put("file", c.fileName); put("start", c.startFrame)
+                put("offset", c.offsetMs); put("dur", c.durationMs); put("vol", c.volume.toDouble()); put("muted", c.muted)
+            })
+        }
         put("keys", JSONArray().apply {
             l.keyframes.forEach { (f, k) ->
                 put(JSONObject().apply {
@@ -202,7 +215,16 @@ object Serializer {
             blend = runCatching { BlendMode.valueOf(o.getString("blend")) }.getOrDefault(BlendMode.NORMAL),
             guide = o.optBoolean("guide", false), color = o.optInt("color", 0xFF4FC3F7.toInt()),
             bindLayer = if (o.has("bindLayer")) o.getString("bindLayer") else null,
-            bindBone = if (o.has("bindBone")) o.getString("bindBone") else null
+            bindBone = if (o.has("bindBone")) o.getString("bindBone") else null,
+            isMask = o.optBoolean("isMask", false),
+            maskedBy = if (o.has("maskedBy")) o.getString("maskedBy") else null,
+            depth = o.optDouble("depth", 0.0).toFloat(),
+            audio = o.optJSONObject("audio")?.let { a ->
+                AudioClip(
+                    a.getString("id"), a.getString("name"), a.getString("file"), a.optInt("start", 0),
+                    a.optLong("offset", 0), a.getLong("dur"), a.optDouble("vol", 1.0).toFloat(), a.optBoolean("muted", false)
+                )
+            }
         )
         val keys = o.optJSONArray("keys") ?: JSONArray()
         for (i in 0 until keys.length()) {

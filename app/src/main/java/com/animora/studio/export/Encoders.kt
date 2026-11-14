@@ -133,7 +133,9 @@ class GifEncoder(
 }
 
 /** H.264/MP4 через MediaCodec (YUV420 Flexible) + MediaMuxer. */
-class VideoEncoder(private val file: File, private val w: Int, private val h: Int, private val fps: Int) {
+class VideoEncoder(private val file: File, private val w: Int, private val h: Int, private val fps: Int, audioPcm: ShortArray? = null) {
+    private val audio: AacData? = audioPcm?.let { runCatching { encodeAac(it) }.getOrNull() }
+    private var audioTrack = -1
     private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val muxer = MediaMuxer(file.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     private var track = -1
@@ -197,7 +199,11 @@ class VideoEncoder(private val file: File, private val w: Int, private val h: In
             when {
                 i == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!eos) return
                 i == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    track = muxer.addTrack(codec.outputFormat); muxer.start(); muxerStarted = true
+                    track = muxer.addTrack(codec.outputFormat)
+                    audio?.let { audioTrack = muxer.addTrack(it.format) }
+                    muxer.start(); muxerStarted = true
+                    // звук закодирован заранее — пишем его сразу после старта
+                    audio?.samples?.forEach { (bytes, inf) -> muxer.writeSampleData(audioTrack, java.nio.ByteBuffer.wrap(bytes), inf) }
                 }
                 i >= 0 -> {
                     val buf = codec.getOutputBuffer(i)
@@ -212,4 +218,56 @@ class VideoEncoder(private val file: File, private val w: Int, private val h: In
             }
         }
     }
+}
+
+class AacData(val format: MediaFormat, val samples: List<Pair<ByteArray, MediaCodec.BufferInfo>>)
+
+/** Кодирование моно PCM 44.1 кГц в AAC-LC. */
+fun encodeAac(pcm: ShortArray, rate: Int = 44100): AacData {
+    val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, rate, 1)
+    fmt.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+    fmt.setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
+    fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+    val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+    codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+    codec.start()
+    val out = ArrayList<Pair<ByteArray, MediaCodec.BufferInfo>>()
+    var outFormat: MediaFormat? = null
+    val info = MediaCodec.BufferInfo()
+    var pos = 0
+    var inputDone = false
+    while (true) {
+        if (!inputDone) {
+            val ii = codec.dequeueInputBuffer(10_000)
+            if (ii >= 0) {
+                val buf = codec.getInputBuffer(ii)!!
+                buf.clear()
+                val n = minOf(pcm.size - pos, buf.capacity() / 2, 2048)
+                val pts = pos * 1_000_000L / rate
+                if (n <= 0) { codec.queueInputBuffer(ii, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inputDone = true }
+                else {
+                    val bb = buf.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    for (i in 0 until n) bb.putShort(pcm[pos + i])
+                    codec.queueInputBuffer(ii, 0, n * 2, pts, 0)
+                    pos += n
+                }
+            }
+        }
+        val oi = codec.dequeueOutputBuffer(info, 10_000)
+        if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) outFormat = codec.outputFormat
+        else if (oi >= 0) {
+            val buf = codec.getOutputBuffer(oi)
+            if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && info.size > 0 && buf != null) {
+                val bytes = ByteArray(info.size)
+                buf.position(info.offset); buf.get(bytes)
+                val copy = MediaCodec.BufferInfo().apply { set(0, info.size, info.presentationTimeUs, info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM.inv()) }
+                out.add(bytes to copy)
+            }
+            codec.releaseOutputBuffer(oi, false)
+            if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+        }
+    }
+    val f = outFormat ?: codec.outputFormat
+    codec.stop(); codec.release()
+    return AacData(f, out)
 }

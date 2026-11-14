@@ -102,7 +102,7 @@ import com.animora.studio.ui.VerticalSlider
 import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
-enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES }
+enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES, LIPSYNC }
 
 @Composable
 fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
@@ -113,7 +113,7 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
     DisposableEffect(owner) {
         val obs = LifecycleEventObserver { _, ev -> if (ev == Lifecycle.Event.ON_STOP) { ctl.stop(); if (ctl.dirty) ctl.saveAsync() } }
         owner.lifecycle.addObserver(obs)
-        onDispose { owner.lifecycle.removeObserver(obs) }
+        onDispose { owner.lifecycle.removeObserver(obs); ctl.dispose() }
     }
     LaunchedEffect(Unit) { while (true) { delay(60_000); if (ctl.dirty && !ctl.playing) ctl.saveAsync() } }
     val exit = { ctl.stop(); ctl.saveAsync { onExit() } }
@@ -129,7 +129,10 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
     val importBrushes = { brushPicker.launch(arrayOf("*/*")) }
 
     val timeline: @Composable () -> Unit = { Timeline(ctl, onMore = { dialog = Dlg.FRAME_MENU }, onCurves = { dialog = Dlg.CURVES }) }
-    val layers: @Composable () -> Unit = { LayersPanel(ctl, onImport = { picker.launch("image/*") }) }
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { ctl.importAudio(it) } }
+    val layers: @Composable () -> Unit = {
+        LayersPanel(ctl, onImport = { picker.launch("image/*") }, onImportAudio = { audioPicker.launch("audio/*") }, onLipSync = { dialog = Dlg.LIPSYNC })
+    }
     val tools: @Composable () -> Unit = { ToolRail(ctl, onColor = { dialog = Dlg.COLOR }, onBrush = { dialog = Dlg.BRUSH }) }
 
     Column(Modifier.fillMaxSize().background(Pal.bg).systemBarsPadding()) {
@@ -210,6 +213,7 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
         Dlg.PLAYBACK -> PlaybackDialog(ctl) { dialog = null }
         Dlg.UI -> UiSettingsDialog { dialog = null }
         Dlg.CURVES -> CurveEditorDialog(ctl) { dialog = null }
+        Dlg.LIPSYNC -> LipSyncDialog(ctl) { dialog = null }
         null -> {}
     }
 }
@@ -279,6 +283,8 @@ private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (D
                     DropdownMenuItem(text = { Text("Сбросить вид") }, onClick = { ctl.viewResetToken++; menu = false })
                     DropdownMenuItem(text = { Text("Настроить интерфейс…") }, onClick = { menu = false; onDialog(Dlg.UI) })
                     DropdownMenuItem(text = { Text("Кривые анимации…") }, onClick = { menu = false; onDialog(Dlg.CURVES) })
+                    DropdownMenuItem(text = { Text("Lip-sync по звуку…") }, onClick = { menu = false; onDialog(Dlg.LIPSYNC) })
+                    CheckItem("Звук при перемотке", ctl.audioScrub) { ctl.audioScrub = !ctl.audioScrub }
                     if (!showLayers || !UiPrefs.visible(TopButton.LAYERS)) CheckItem("Панель слоёв", showLayers) { onToggleLayers() }
                     if (!UiPrefs.visible(TopButton.EXPORT)) DropdownMenuItem(text = { Text("Экспорт…") }, onClick = { menu = false; onDialog(Dlg.EXPORT) })
                     DropdownMenuItem(text = { Text("Параметры проекта…") }, onClick = { menu = false; onDialog(Dlg.PROJECT) })
@@ -412,7 +418,14 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                 }
                 Tool.TRANSFORM -> {
                     val t = ctl.currentTransform()
-                    if (t == null) Text("Нет ключа на слое", fontSize = 12.sp, color = Pal.dim) else {
+                    if (ctl.activeLayer?.type == com.animora.studio.model.LayerType.CAMERA) {
+                        val ct = t ?: com.animora.studio.model.Transform()
+                        Text("🎥 Тяните кадр · Зум ${(ct.sx * 100).toInt()}%", fontSize = 12.sp, color = Pal.dim)
+                        Slider(ct.sx.coerceIn(0.2f, 5f), { v -> ctl.editCamera("camzoom") { it.copy(sx = v, sy = v) } }, valueRange = 0.2f..5f, modifier = Modifier.width(120.dp))
+                        Text("Поворот ${ct.rot.toInt()}°", fontSize = 12.sp, color = Pal.dim)
+                        Slider(ct.rot.coerceIn(-180f, 180f), { v -> ctl.editCamera("camrot") { it.copy(rot = v) } }, valueRange = -180f..180f, modifier = Modifier.width(110.dp))
+                        SmallBtn("Сброс") { ctl.editCamera("camreset${System.nanoTime()}") { com.animora.studio.model.Transform() } }
+                    } else if (t == null) Text("Нет ключа на слое", fontSize = 12.sp, color = Pal.dim) else {
                         Text("Поворот ${t.rot.toInt()}°", fontSize = 12.sp, color = Pal.dim)
                         Slider(t.rot.coerceIn(-360f, 360f), { v -> ctl.editKeyTransform("rot") { it.copy(rot = v) } }, valueRange = -360f..360f, modifier = Modifier.width(110.dp))
                         Text("Масштаб ${(t.sx * 100).toInt()}%", fontSize = 12.sp, color = Pal.dim)

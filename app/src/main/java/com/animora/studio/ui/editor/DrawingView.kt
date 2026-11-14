@@ -134,7 +134,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
             onion = ctl.onionEnabled && !ctl.playing,
             onionPrev = ctl.onionPrev, onionNext = ctl.onionNext, onionOpacity = ctl.onionOpacity,
             onionAllLayers = ctl.onionAllLayers, onionKeysOnly = ctl.onionKeysOnly, onionTint = ctl.onionTint,
-            activeLayerId = ctl.activeLayerId
+            activeLayerId = ctl.activeLayerId,
+            maskPreview = true
         )
         renderer.drawFrame(c, project, ctl.frame, opt)
         cacheKey = key
@@ -227,6 +228,9 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
             if (l.type != LayerType.BONES || !l.visible || l.bones.isEmpty()) continue
             val active = l.id == ctl.activeLayerId
             val world = ctl.posedBones(l)
+            val cam = ctl.cameraMatrix()
+            val camSave = canvas.save()
+            if (cam != null) canvas.concat(cam)
             for (b in l.bones) {
                 val w = world[b.id] ?: continue
                 val sel = b.id == ctl.selectedBoneId
@@ -245,7 +249,14 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 overlay.style = Paint.Style.FILL; overlay.color = if (b.parentId == null) 0xFFFFC107.toInt() else Color.WHITE
                 canvas.drawCircle(w.hx, w.hy, 5f / vs, overlay)
             }
+            canvas.restoreToCount(camSave)
         }
+    }
+
+    /** Координаты холста → координаты сцены (без камеры) — для костей. */
+    private fun toScene(d: FloatArray): FloatArray {
+        ctl.cameraMatrix()?.let { m -> val inv = Matrix(); m.invert(inv); inv.mapPoints(d) }
+        return d
     }
 
     private fun drawSelection(canvas: Canvas, vs: Float) {
@@ -440,8 +451,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 if (!selDragging) { ctl.selection = null; lasso.clear(); lasso.add(d[0]); lasso.add(d[1]); lassoActive = true }
             }
             Tool.TRANSFORM -> keyDragging = ctl.beginKeyTransform(d[0], d[1], tolDoc(), rotOffset())
-            Tool.POSE -> poseDragging = ctl.beginPose(d[0], d[1], tolDoc())
-            Tool.BONE -> { shapeX0 = d[0]; shapeY0 = d[1]; shapeX1 = d[0]; shapeY1 = d[1]; shapeActive = false }
+            Tool.POSE -> { toScene(d); poseDragging = ctl.beginPose(d[0], d[1], tolDoc()) }
+            Tool.BONE -> { toScene(d); shapeX0 = d[0]; shapeY0 = d[1]; shapeX1 = d[0]; shapeY1 = d[1]; shapeActive = false }
             Tool.EYEDROPPER -> pick(d[0], d[1])
             else -> {}
         }
@@ -471,8 +482,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 if (selDragging) ctl.updateSelectionDrag(d[0], d[1]) else { lasso.add(d[0]); lasso.add(d[1]) }
             }
             Tool.TRANSFORM -> if (keyDragging) { val d = toDoc(e.getX(i), e.getY(i)); ctl.updateKeyTransform(d[0], d[1]) }
-            Tool.POSE -> if (poseDragging) { val d = toDoc(e.getX(i), e.getY(i)); ctl.dragPose(d[0], d[1]) }
-            Tool.BONE -> { val d = toDoc(e.getX(i), e.getY(i)); shapeX1 = d[0]; shapeY1 = d[1]; shapeActive = true; curBonePreview() }
+            Tool.POSE -> if (poseDragging) { val d = toScene(toDoc(e.getX(i), e.getY(i))); ctl.dragPose(d[0], d[1]) }
+            Tool.BONE -> { val d = toScene(toDoc(e.getX(i), e.getY(i))); shapeX1 = d[0]; shapeY1 = d[1]; shapeActive = true; curBonePreview() }
             Tool.EYEDROPPER -> { val d = toDoc(e.getX(i), e.getY(i)); pick(d[0], d[1]) }
             else -> {}
         }
@@ -538,7 +549,9 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
 
     private fun curBonePreview() {
         // предпросмотр кости рисуем как линию
-        liveStroke = StrokeElement(floatArrayOf(shapeX0, shapeY0, 1f, shapeX1, shapeY1, 0.3f), 0xFFFF9800.toInt(), 10f / viewScale, BrushKind.PEN, 0.8f)
+        val pp = floatArrayOf(shapeX0, shapeY0, shapeX1, shapeY1)
+        ctl.cameraMatrix()?.mapPoints(pp)
+        liveStroke = StrokeElement(floatArrayOf(pp[0], pp[1], 1f, pp[2], pp[3], 0.3f), 0xFFFF9800.toInt(), 10f / viewScale, BrushKind.PEN, 0.8f)
     }
 
     private fun pick(x: Float, y: Float) {
