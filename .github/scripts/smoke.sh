@@ -34,6 +34,13 @@ crashcheck() {
 screen_texts() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb shell cat /sdcard/ui.xml | grep -o 'text="[^"]\+"' | head -12 | tr '\n' ' '; echo; }
 read W H < <(adb shell wm size | grep -o '[0-9]*x[0-9]*' | tail -1 | tr 'x' ' ')
 echo "SCREEN SIZE $W x $H"
+DENS=$(adb shell wm density | grep -o '[0-9]*' | tail -1); RX=$((27*DENS/160))
+# инструмент на левой панели: если не виден — прокручиваем панель
+tool() {
+  for i in 1 2 3 4; do tap_once "$1" && return 0; adb shell input swipe $RX $((H*7/10)) $RX $((H*3/10)) 250; sleep 1; done
+  for i in 1 2 3 4 5 6; do tap_once "$1" && return 0; adb shell input swipe $RX $((H*3/10)) $RX $((H*7/10)) 250; sleep 1; done
+  echo "NOT FOUND tool: $1"; return 1
+}
 scroll_down() { for i in 1 2 3 4 5 6; do adb shell input swipe $((W/2)) $((H*8/10)) $((W/2)) $((H*2/10)) 150; sleep 0.5; done; }
 tap_once() {
   adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
@@ -111,8 +118,8 @@ adb shell input keyevent 4; sleep 4
 # символы (этап 2)
 tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
 adb shell input swipe $((W*4/10)) $((H*4/10)) $((W*6/10)) $((H*5/10)) 400; sleep 2
-tap "Лассо"; sleep 1
-adb shell input tap $((W/2)) $((H*45/100)); sleep 2; shot sym_selected
+tool "Лассо"; sleep 1
+tap "Выделить всё"; sleep 2; shot sym_selected
 tap "В символ"; sleep 3; shot sym_converted
 tap "✎ Изменить символ"; sleep 3
 adb shell input swipe $((W*4/10)) $((H*5/10)) $((W*6/10)) $((H*4/10)) 400; sleep 2; shot sym_inside
@@ -125,7 +132,7 @@ adb shell input keyevent 4; sleep 4
 crashcheck symbols_back
 # этап 3: текст, папки, выделение кадров, траектория
 tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
-tap "Текст"; sleep 1
+tool "Текст"; sleep 1
 adb shell input tap $((W/2)) $((H*4/10)); sleep 2
 tap "Текст (можно в несколько строк)"; sleep 1; adb shell input text "Animora"; sleep 1
 tap "Готово"; sleep 2; shot text
@@ -134,7 +141,7 @@ tap "⧉ Выделить"; sleep 1
 adb shell input swipe $((W*5/10)) $((H*92/100)) $((W*7/10)) $((H*92/100)) 500; sleep 2
 tap "×2"; sleep 1; tap "1▶"; sleep 1; shot frames_sel
 tap "⧉ Выделение: вкл"; sleep 1
-tap "Трансформация ключа"; sleep 1; tap "〰 Траектория"; sleep 1
+tool "Трансформация ключа"; sleep 1; tap "〰 Траектория"; sleep 1
 adb shell input swipe $((W*3/10)) $((H*5/10)) $((W*7/10)) $((H*3/10)) 600; sleep 2
 tap "Воспроизвести"; sleep 3; tap "Воспроизвести"; sleep 1; shot guide
 crashcheck stage3
@@ -145,13 +152,13 @@ tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
 adb shell input swipe $((W*3/10)) $((H*4/10)) $((W*7/10)) $((H*4/10)) 500; sleep 1
 adb shell input swipe $((W*7/10)) $((H*4/10)) $((W*5/10)) $((H*6/10)) 500; sleep 1
 adb shell input swipe $((W*5/10)) $((H*6/10)) $((W*3/10)) $((H*4/10)) 500; sleep 1
-tap "Заливка"; sleep 1; tap "Линейный"; sleep 1
+tool "Заливка"; sleep 1; tap "Линейный"; sleep 1
 adb shell input tap $((W*5/10)) $((H*46/100)); sleep 4; shot vfill
-tap "Изгиб линий"; sleep 1
+tool "Изгиб линий"; sleep 1
 adb shell input swipe $((W*5/10)) $((H*4/10)) $((W*5/10)) $((H*3/10)) 500; sleep 2
-tap "Ширина линии"; sleep 1
+tool "Ширина линии"; sleep 1
 adb shell input swipe $((W*4/10)) $((H*4/10)) $((W*4/10)) $((H*35/100)) 500; sleep 2
-tap "Деформация булавками"; sleep 1
+tool "Деформация булавками"; sleep 1
 adb shell input tap $((W*3/10)) $((H*4/10)); sleep 1
 adb shell input tap $((W*7/10)) $((H*4/10)); sleep 1
 adb shell input swipe $((W*7/10)) $((H*4/10)) $((W*8/10)) $((H*3/10)) 500; sleep 2; shot warp
@@ -165,7 +172,7 @@ tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
 adb shell input swipe $((W*4/10)) $((H*4/10)) $((W*6/10)) $((H*5/10)) 400; sleep 1
 tap "Ещё"; sleep 2; tap "Линейки и направляющие"; sleep 2
 adb shell input keyevent 4; sleep 1; shot rulers
-tap "Лассо"; sleep 1; adb shell input tap $((W/2)) $((H*45/100)); sleep 2
+tool "Лассо"; sleep 1; tap "Выделить всё"; sleep 2
 tap "Выровнять / размер…"; sleep 2; tap "↔ Центр"; sleep 1; tap "↕ Центр"; sleep 1; shot align; tap "Готово"; sleep 1
 tap "Ещё"; sleep 2; tap "Сцены (1)…"; sleep 2; tap "+ Сцена"; sleep 2; shot scenes; tap "Готово"; sleep 2
 adb shell input swipe $((W*4/10)) $((H*5/10)) $((W*6/10)) $((H*4/10)) 400; sleep 1
