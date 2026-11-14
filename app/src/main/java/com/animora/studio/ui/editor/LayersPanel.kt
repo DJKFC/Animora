@@ -51,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,9 +67,15 @@ import kotlin.math.max
 fun LayersPanel(ctl: EditorController, onImport: () -> Unit, onImportAudio: () -> Unit = {}, onLipSync: () -> Unit = {}) {
     ctl.version
     val p = ctl.project
+    var libraryTab by remember { mutableStateOf(false) }
     Column(Modifier.width(com.animora.studio.ui.UiPrefs.layersWidth.dp).fillMaxHeight().background(Pal.panel).padding(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Слои", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).padding(start = 4.dp))
+            SmallBtn("Слои", selected = !libraryTab) { libraryTab = false }
+            SmallBtn("Библиотека (${p.symbols.size})", selected = libraryTab) { libraryTab = true }
+        }
+        if (libraryTab) { LibraryPanel(ctl); return@Column }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.weight(1f))
             IconBtn(Icons.Filled.Add, "Слой рисования") { ctl.addLayer(LayerType.DRAWING) }
             IconBtn(Icons.Filled.AccountTree, "Слой костей", tint = Pal.accent2) { ctl.addLayer(LayerType.BONES) }
             IconBtn(Icons.Filled.Image, "Импорт изображения", onClick = onImport)
@@ -267,3 +274,64 @@ private fun CameraProps(ctl: EditorController) {
     SmallBtn("Сбросить камеру в этом кадре") { ctl.editCamera("camreset${System.nanoTime()}") { com.animora.studio.model.Transform() } }
     Text("Скрытый слой камеры = камера выключена.", fontSize = 10.sp, color = Pal.dim)
 }
+
+@Composable
+private fun LibraryPanel(ctl: EditorController) {
+    ctl.version
+    val p = ctl.project
+    var renaming by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.fillMaxWidth()) {
+        Row {
+            SmallBtn("+ Новый символ") { ctl.newSymbol() }
+            SmallBtn("Выделение → символ") { ctl.convertSelectionToSymbol() }
+        }
+        if (p.symbols.isEmpty()) Text(
+            "Символ — рисунок или анимация со своим таймлайном, которую можно ставить много раз. " +
+                "Выделите штрихи лассо и нажмите «В символ», либо создайте новый.",
+            fontSize = 12.sp, color = Pal.dim, modifier = Modifier.padding(top = 8.dp)
+        )
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            p.symbols.forEach { sym ->
+                val thumb = remember(sym.id, ctl.version) { symbolThumb(ctl, sym) }
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Pal.panel2).padding(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        thumb?.let {
+                            androidx.compose.foundation.Image(it.asImageBitmap(), null, Modifier.size(56.dp).clip(RoundedCornerShape(6.dp)).background(Color.White))
+                        }
+                        Column(Modifier.weight(1f).padding(start = 6.dp)) {
+                            if (renaming == sym.id) {
+                                var n by remember { mutableStateOf(sym.name) }
+                                OutlinedTextField(n, { n = it; ctl.renameSymbol(sym.id, it) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            } else Text(sym.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${sym.frameCount} кадр. · ${ctl.symbolUseCount(sym.id)} экз.", fontSize = 10.sp, color = Pal.dim)
+                        }
+                    }
+                    Row {
+                        SmallBtn("На холст") { ctl.placeSymbol(sym.id) }
+                        SmallBtn("Изменить") { ctl.enterSymbol(sym.id) }
+                    }
+                    Row {
+                        SmallBtn(if (renaming == sym.id) "Готово" else "Имя") { renaming = if (renaming == sym.id) null else sym.id }
+                        SmallBtn("Копия") { ctl.duplicateSymbol(sym.id) }
+                        SmallBtn("✕") { ctl.deleteSymbol(sym.id) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun symbolThumb(ctl: EditorController, sym: com.animora.studio.model.Symbol): android.graphics.Bitmap? = runCatching {
+    val p = ctl.project
+    val b = com.animora.studio.model.SymbolRegistry.bounds(sym.id)
+    if (b.width() <= 0f || b.height() <= 0f) return null
+    val s = 112f / max(b.width(), b.height())
+    val bmp = android.graphics.Bitmap.createBitmap(112, 112, android.graphics.Bitmap.Config.ARGB_8888)
+    val c = android.graphics.Canvas(bmp)
+    c.translate((112 - b.width() * s) / 2, (112 - b.height() * s) / 2); c.scale(s, s); c.translate(-b.left, -b.top)
+    val r = com.animora.studio.engine.Renderer()
+    val m = android.graphics.Matrix()
+    r.drawFrame(c, p, 0, com.animora.studio.engine.FrameOptions(background = false, includeGuides = false, onlyLayerId = "__none__"))
+    r.drawElement(c, com.animora.studio.model.InstanceElement(sym.id, m, com.animora.studio.model.LoopMode.SINGLE))
+    bmp
+}.getOrNull()

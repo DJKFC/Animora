@@ -33,6 +33,11 @@ import com.animora.studio.export.ExportSettings
 import com.animora.studio.export.Exporter
 import com.animora.studio.model.AudioClip
 import com.animora.studio.model.BitmapElement
+import com.animora.studio.model.ColorEffect
+import com.animora.studio.model.InstanceElement
+import com.animora.studio.model.LoopMode
+import com.animora.studio.model.Symbol
+import com.animora.studio.model.SymbolRegistry
 import com.animora.studio.model.Bone
 import com.animora.studio.model.BrushLibrary
 import com.animora.studio.model.BrushRegistry
@@ -909,6 +914,7 @@ class EditorController(
             val px = p[0].toInt(); val py = p[1].toInt()
             px in 0 until e.bitmap.width && py in 0 until e.bitmap.height && Color.alpha(e.bitmap.getPixel(px, py)) > 20
         }
+        is InstanceElement -> e.bounds().let { b -> b.inset(-r, -r); b.contains(x, y) }
     }
 
     fun fillAt(x: Float, y: Float) {
@@ -961,10 +967,26 @@ class EditorController(
                 is BitmapElement -> {
                     val r = el.bounds(); m.mapRect(r); pointInPolygon(r.centerX(), r.centerY(), poly)
                 }
+                is InstanceElement -> {
+                    val r = el.bounds(); m.mapRect(r); pointInPolygon(r.centerX(), r.centerY(), poly)
+                }
             }
         }
         selection = if (idx.isEmpty()) null else Selection(l.id, e.key, idx)
         if (idx.isNotEmpty()) toast("Выделено: ${idx.size}")
+    }
+
+    /** Выделить касанием верхний элемент под точкой (для лассо без обводки). */
+    fun selectAt(x: Float, y: Float, tol: Float) {
+        val l = activeLayer ?: return
+        if (l.type != LayerType.DRAWING) return
+        val e = l.keyframes.floorEntry(frame) ?: run { selection = null; return }
+        val m = Renderer.layerMatrix(project, l, frame)
+        val inv = Matrix(); m.invert(inv)
+        val p = floatArrayOf(x, y); inv.mapPoints(p)
+        val lt = tol / max(0.01f, m.mapRadius(1f))
+        val idx = e.value.elements.indices.reversed().firstOrNull { hits(e.value.elements[it], p[0], p[1], lt) }
+        selection = idx?.let { Selection(l.id, e.key, listOf(it)) }
     }
 
     fun selectAll() {
@@ -1104,6 +1126,7 @@ class EditorController(
                     for (j in px.indices) px[j] = (px[j] and 0xFF000000.toInt()) or rgb
                     BitmapElement(Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888), Matrix(e.matrix), e.alpha)
                 }
+                is InstanceElement -> e.with(effect = e.effect.copy(tint = color, tintAmount = 1f))
             }
         }
         changed()
@@ -1452,11 +1475,169 @@ class EditorController(
         }
     }
 
+    // ---------------- символы и библиотека ----------------
+    init { SymbolRegistry.project = project }
+
+    /** Стек входов в символы: что было на «сцене» снаружи. */
+    class SymbolEdit(val symbolId: String, val layers: List<Layer>, val frameCount: Int, val frame: Int, val activeLayer: String?)
+    val editStack = mutableStateListOf<SymbolEdit>()
+    val editingSymbol: Symbol? get() = editStack.lastOrNull()?.let { project.symbol(it.symbolId) }
+
+    fun breadcrumbs(): List<String> = listOf("Сцена") + editStack.mapNotNull { project.symbol(it.symbolId)?.name }
+
+    /** Войти в символ для правки: его слои и таймлайн временно становятся текущими. */
+    fun enterSymbol(id: String) {
+        val sym = project.symbol(id) ?: return
+        if (editStack.any { it.symbolId == id }) { toast("Этот символ уже открыт выше по цепочке"); return }
+        stop()
+        editStack.add(SymbolEdit(id, project.layers.toList(), project.frameCount, frame, activeLayerId))
+        project.layers.clear(); project.layers.addAll(sym.layers)
+        if (project.layers.isEmpty()) project.layers.add(Layer(name = "Слой 1").also { it.keyframes[0] = Keyframe() })
+        project.frameCount = sym.frameCount.coerceAtLeast(1)
+        frame = 0; activeLayerId = project.layers.lastOrNull()?.id; selection = null
+        rangeTo = project.frameCount - 1
+        history.clear()
+        changed(); toast("Правка символа «${sym.name}». Выход — кнопка «← Сцена» сверху")
+    }
+
+    /** Выйти из символа (сохранив изменения в нём). */
+    fun exitSymbol(all: Boolean = false) {
+        while (editStack.isNotEmpty()) {
+            val e = editStack.removeAt(editStack.lastIndex)
+            project.symbol(e.symbolId)?.let { sym ->
+                sym.layers.clear(); sym.layers.addAll(project.layers); sym.frameCount = project.frameCount
+            }
+            project.layers.clear(); project.layers.addAll(e.layers)
+            project.frameCount = e.frameCount
+            frame = e.frame.coerceIn(0, project.frameCount - 1); activeLayerId = e.activeLayer
+            if (!all) break
+        }
+        rangeTo = project.frameCount - 1
+        selection = null; history.clear(); changed()
+    }
+
+    /** Копия проекта «как на сцене» — даже если сейчас открыт символ. */
+    fun projectForSave(): Project {
+        val copy = project.detachedCopy()
+        if (editStack.isEmpty()) return copy
+        var layers = copy.layers.toList(); var fc = copy.frameCount
+        for (e in editStack.reversed()) {
+            copy.symbol(e.symbolId)?.let { sym -> sym.layers.clear(); sym.layers.addAll(layers); sym.frameCount = fc }
+            layers = e.layers.map { it.copy() }; fc = e.frameCount
+        }
+        copy.layers.clear(); copy.layers.addAll(layers); copy.frameCount = fc
+        return copy
+    }
+
+    private fun docCenterShift(cx: Float, cy: Float) = Matrix().apply { setTranslate(project.width / 2f - cx, project.height / 2f - cy) }
+
+    /** «Преобразовать в символ» (F8): выделенное уходит в новый символ, на его месте — экземпляр. */
+    fun convertSelectionToSymbol(name: String? = null) {
+        val s = selection ?: run { toast("Сначала выделите штрихи лассо"); return }
+        val k = selectionKey() ?: return
+        val l = project.layer(s.layerId) ?: return
+        val b = selectionBounds() ?: return
+        checkpoint()
+        val lm = Renderer.layerMatrix(project, l, frame)
+        val shift = docCenterShift(b.centerX(), b.centerY())
+        val m = Matrix(lm); m.postConcat(shift)
+        val content = s.indices.sorted().map { k.elements[it].transformed(m) }
+        val sym = Symbol(name = name ?: "Символ ${project.symbols.size + 1}", frameCount = 1)
+        sym.layers.add(Layer(name = "Слой 1").also { it.keyframes[0] = Keyframe(content.toMutableList()) })
+        project.symbols.add(sym)
+        s.indices.sortedDescending().forEach { k.elements.removeAt(it) }
+        // экземпляр: символ → документ (обратный сдвиг) → локальные координаты слоя
+        val inv = Matrix(); lm.invert(inv)
+        val im = Matrix(); shift.invert(im); im.postConcat(inv)
+        k.elements.add(InstanceElement(sym.id, im))
+        selection = Selection(l.id, s.key, listOf(k.elements.size - 1))
+        changed(); toast("Создан символ «${sym.name}» (библиотека). Двойное касание по нему в лассо — правка")
+    }
+
+    fun newSymbol() {
+        checkpoint()
+        val sym = Symbol(name = "Символ ${project.symbols.size + 1}", frameCount = 24)
+        sym.layers.add(Layer(name = "Слой 1").also { it.keyframes[0] = Keyframe() })
+        project.symbols.add(sym)
+        changed()
+        enterSymbol(sym.id)
+    }
+
+    /** Поставить экземпляр символа в центр текущего кадра. */
+    fun placeSymbol(id: String) {
+        val l = editableLayer() ?: return
+        if (editStack.any { it.symbolId == id } || editingSymbol?.id == id) { toast("Нельзя вложить символ сам в себя"); return }
+        checkpoint()
+        val k = keyForDrawing(l)
+        val inv = inverseLayerMatrix(l)
+        k.elements.add(InstanceElement(id, Matrix(inv)))
+        selection = Selection(l.id, frame, listOf(k.elements.size - 1)); tool = Tool.LASSO
+        changed()
+    }
+
+    fun renameSymbol(id: String, name: String) { project.symbol(id)?.let { checkpointOnce("symname$id"); it.name = name; changed() } }
+
+    fun duplicateSymbol(id: String) {
+        val src = project.symbol(id) ?: return
+        checkpoint()
+        val c = src.copy(); val d = Symbol(name = src.name + " копия", layers = c.layers.map { it.copy(freshId = true) }.toMutableList(), frameCount = src.frameCount)
+        project.symbols.add(d); changed()
+    }
+
+    private fun allLayersEverywhere(): List<Layer> = project.layers + project.symbols.flatMap { it.layers } + editStack.flatMap { it.layers }
+
+    fun symbolUseCount(id: String): Int = allLayersEverywhere().sumOf { l -> l.keyframes.values.sumOf { k -> k.elements.count { it is InstanceElement && it.symbolId == id } } }
+
+    fun deleteSymbol(id: String) {
+        if (editStack.any { it.symbolId == id }) { toast("Сначала выйдите из этого символа"); return }
+        checkpoint()
+        allLayersEverywhere().forEach { l -> l.keyframes.values.forEach { k -> k.elements.removeAll { it is InstanceElement && it.symbolId == id } } }
+        project.symbols.removeAll { it.id == id }
+        selection = null; changed()
+    }
+
+    fun selectedInstance(): InstanceElement? {
+        val s = selection ?: return null
+        if (s.indices.size != 1) return null
+        return selectionKey()?.elements?.getOrNull(s.indices[0]) as? InstanceElement
+    }
+
+    fun updateInstance(tag: String, f: (InstanceElement) -> InstanceElement) {
+        val s = selection ?: return
+        val k = selectionKey() ?: return
+        val e = k.elements.getOrNull(s.indices.firstOrNull() ?: return) as? InstanceElement ?: return
+        checkpointOnce(tag)
+        k.elements[s.indices[0]] = f(e)
+        changed()
+    }
+
+    /** «Разбить» экземпляр: заменить его содержимым текущего кадра символа. */
+    fun breakApart() {
+        val s = selection ?: return
+        val k = selectionKey() ?: return
+        val idx = s.indices.firstOrNull() ?: return
+        val e = k.elements.getOrNull(idx) as? InstanceElement ?: return
+        val sym = project.symbol(e.symbolId) ?: return
+        checkpoint()
+        val t = frame - s.key
+        val sf = e.symbolFrame(t, sym.frameCount)
+        val out = ArrayList<Element>()
+        for (layer in sym.layers) {
+            if (layer.type != LayerType.DRAWING || !layer.visible || layer.isMask) continue
+            val r = Renderer.resolve(project, layer, sf, sym.layers) ?: continue
+            val m = Matrix(r.matrix); m.postConcat(e.matrix)
+            r.elements.forEach { out.add(it.transformed(m)) }
+        }
+        k.elements.removeAt(idx); k.elements.addAll(idx, out)
+        selection = if (out.isEmpty()) null else Selection(s.layerId, s.key, (idx until idx + out.size).toList())
+        changed(); toast("Экземпляр разбит на ${out.size} элементов")
+    }
+
     // ---------------- сохранение / экспорт ----------------
     fun saveAsync(after: (() -> Unit)? = null) {
         project.modified = System.currentTimeMillis()
-        val copy = project.detachedCopy()
-        val f = frame
+        val copy = projectForSave()
+        val f = editStack.firstOrNull()?.frame ?: frame
         dirty = false
         scope.launch {
             withContext(Dispatchers.IO) {
@@ -1473,7 +1654,7 @@ class EditorController(
     fun export(settings: ExportSettings, onDone: (Uri?, String?) -> Unit) {
         if (exportProgress != null) return
         stop()
-        val copy = project.detachedCopy()
+        val copy = projectForSave()
         exportProgress = 0f
         scope.launch {
             val result = withContext(Dispatchers.Default) {

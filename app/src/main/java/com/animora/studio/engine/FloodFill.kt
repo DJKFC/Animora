@@ -113,6 +113,8 @@ class History(private val project: Project, private val limit: Int = 80) {
     /** Отменить последний checkpoint без перехода в redo (для отменённых действий). */
     fun dropLast() { undoStack.removeLastOrNull() }
 
+    fun clear() { undoStack.clear(); redoStack.clear() }
+
     fun undo(): Boolean {
         val s = undoStack.removeLastOrNull() ?: return false
         redoStack.addLast(project.snapshot()); project.restore(s); return true

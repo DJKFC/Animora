@@ -116,9 +116,17 @@ object Serializer {
         put("created", p.created); put("modified", p.modified)
         put("palette", JSONArray().apply { p.palette.forEach { put(it) } })
         put("layers", JSONArray().apply { p.layers.forEach { put(layerToJson(it)) } })
+        put("symbols", JSONArray().apply {
+            p.symbols.forEach { sym ->
+                put(JSONObject().apply {
+                    put("id", sym.id); put("name", sym.name); put("frames", sym.frameCount)
+                    put("layers", JSONArray().apply { sym.layers.forEach { put(layerToJson(it)) } })
+                })
+            }
+        })
         // встраиваем использованные импортированные кисти, чтобы проект открывался где угодно
         val used = LinkedHashSet<String>()
-        p.layers.forEach { l -> l.keyframes.values.forEach { k -> k.elements.forEach { if (it is StrokeElement && it.tipId != null) used.add(it.tipId) } } }
+        (p.layers + p.symbols.flatMap { it.layers }).forEach { l -> l.keyframes.values.forEach { k -> k.elements.forEach { if (it is StrokeElement && it.tipId != null) used.add(it.tipId) } } }
         put("tips", JSONArray().apply { used.mapNotNull { BrushRegistry.get(it) }.forEach { put(it.toJson(withThumb = false)) } })
     }
 
@@ -153,6 +161,12 @@ object Serializer {
                                     put("t", "s"); put("c", e.color); put("sz", e.size.toDouble())
                                     put("k", e.kind.name); put("o", e.opacity.toDouble()); put("p", floatsToB64(e.pts))
                                     e.tipId?.let { put("tip", it) }
+                                })
+                                is InstanceElement -> put(JSONObject().apply {
+                                    put("t", "i"); put("sym", e.symbolId); put("m", matrixToJson(e.matrix))
+                                    put("loop", e.loop.name); put("ff", e.firstFrame)
+                                    val fx = e.effect
+                                    if (!fx.isDefault) put("fx", JSONArray().apply { put(fx.alpha.toDouble()); put(fx.tint); put(fx.tintAmount.toDouble()); put(fx.brightness.toDouble()) })
                                 })
                                 is BitmapElement -> put(JSONObject().apply {
                                     put("t", "b"); put("m", matrixToJson(e.matrix)); put("a", e.alpha.toDouble())
@@ -199,6 +213,15 @@ object Serializer {
             for (i in 0 until a.length()) runCatching {
                 val b = CustomBrush.fromJson(a.getJSONObject(i))
                 if (BrushRegistry.get(b.id) == null) BrushRegistry.register(b)
+            }
+        }
+        o.optJSONArray("symbols")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val so = arr.getJSONObject(i)
+                val sym = Symbol(so.getString("id"), so.getString("name"), frameCount = so.optInt("frames", 1))
+                val ls = so.getJSONArray("layers")
+                for (j in 0 until ls.length()) sym.layers.add(layerFromJson(ls.getJSONObject(j)))
+                p.symbols.add(sym)
             }
         }
         val layers = o.getJSONArray("layers")
@@ -258,6 +281,14 @@ object Serializer {
                             if (e.has("tip")) e.getString("tip") else null
                         )
                     )
+                    "i" -> {
+                        val fx = e.optJSONArray("fx")
+                        kf.elements.add(InstanceElement(
+                            e.getString("sym"), jsonToMatrix(e.getJSONArray("m")),
+                            runCatching { LoopMode.valueOf(e.getString("loop")) }.getOrDefault(LoopMode.LOOP), e.optInt("ff", 0),
+                            if (fx == null) ColorEffect() else ColorEffect(fx.getDouble(0).toFloat(), fx.getInt(1), fx.getDouble(2).toFloat(), fx.getDouble(3).toFloat())
+                        ))
+                    }
                     "b" -> {
                         val b64 = e.getString("png")
                         val bytes = Base64.decode(b64, Base64.NO_WRAP)

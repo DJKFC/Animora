@@ -273,7 +273,7 @@ class Layer(
 
 class ProjectState(
     val layers: List<Layer>, val frameCount: Int, val name: String, val fps: Int,
-    val bgColor: Int, val bgType: BgType
+    val bgColor: Int, val bgType: BgType, val symbols: List<Symbol> = emptyList()
 )
 
 class Project(
@@ -288,21 +288,26 @@ class Project(
     val layers: MutableList<Layer> = mutableListOf(),
     val palette: MutableList<Int> = defaultPalette().toMutableList(),
     var created: Long = System.currentTimeMillis(),
-    var modified: Long = System.currentTimeMillis()
+    var modified: Long = System.currentTimeMillis(),
+    /** Библиотека символов (клипов со своим таймлайном). */
+    val symbols: MutableList<Symbol> = mutableListOf()
 ) {
     fun layer(id: String?): Layer? = if (id == null) null else layers.firstOrNull { it.id == id }
+    fun symbol(id: String?): Symbol? = if (id == null) null else symbols.firstOrNull { it.id == id }
 
-    fun snapshot() = ProjectState(layers.map { it.copy() }, frameCount, name, fps, bgColor, bgType)
+    fun snapshot() = ProjectState(layers.map { it.copy() }, frameCount, name, fps, bgColor, bgType, symbols.map { it.copy() })
 
     fun restore(s: ProjectState) {
         layers.clear(); layers.addAll(s.layers.map { it.copy() })
         frameCount = s.frameCount; name = s.name; fps = s.fps; bgColor = s.bgColor; bgType = s.bgType
+        symbols.clear(); symbols.addAll(s.symbols.map { it.copy() })
     }
 
     /** Независимая копия для фонового сохранения/экспорта. */
     fun detachedCopy(): Project = Project(
         id, name, width, height, fps, frameCount, bgColor, bgType,
-        layers.map { it.copy() }.toMutableList(), palette.toMutableList(), created, modified
+        layers.map { it.copy() }.toMutableList(), palette.toMutableList(), created, modified,
+        symbols.map { it.copy() }.toMutableList()
     )
 
     companion object {
@@ -330,4 +335,84 @@ data class AudioClip(
     /** Длительность звучания в кадрах. */
     fun frames(fps: Int): Int = (((durationMs - offsetMs).coerceAtLeast(0) * fps + 999) / 1000).toInt()
     fun endFrame(fps: Int): Int = startFrame + frames(fps)
+}
+
+/**
+ * Символ — клип со своими слоями и таймлайном (как символ-график в Animate).
+ * Точка привязки символа — центр документа (width/2, height/2) в координатах символа.
+ */
+class Symbol(
+    val id: String = newId(),
+    var name: String,
+    val layers: MutableList<Layer> = mutableListOf(),
+    var frameCount: Int = 1
+) {
+    fun copy() = Symbol(id, name, layers.map { it.copy() }.toMutableList(), frameCount)
+}
+
+enum class LoopMode(val title: String) { LOOP("Цикл"), ONCE("Один раз"), SINGLE("Один кадр") }
+
+/** Цветовой эффект экземпляра: прозрачность, тонирование, яркость (−1..1). */
+data class ColorEffect(val alpha: Float = 1f, val tint: Int = 0xFFFFFFFF.toInt(), val tintAmount: Float = 0f, val brightness: Float = 0f) {
+    val isDefault: Boolean get() = alpha >= 0.999f && tintAmount <= 0.001f && kotlin.math.abs(brightness) <= 0.001f
+}
+
+/** Экземпляр символа на кадре. matrix — координаты символа → координаты слоя. */
+class InstanceElement(
+    val symbolId: String,
+    val matrix: Matrix,
+    val loop: LoopMode = LoopMode.LOOP,
+    val firstFrame: Int = 0,
+    val effect: ColorEffect = ColorEffect()
+) : Element() {
+    override fun bounds(): RectF {
+        val r = SymbolRegistry.bounds(symbolId)
+        matrix.mapRect(r)
+        return r
+    }
+
+    override fun transformed(m: Matrix): InstanceElement {
+        val mm = Matrix(matrix); mm.postConcat(m)
+        return InstanceElement(symbolId, mm, loop, firstFrame, effect)
+    }
+
+    fun with(loop: LoopMode = this.loop, firstFrame: Int = this.firstFrame, effect: ColorEffect = this.effect, symbolId: String = this.symbolId) =
+        InstanceElement(symbolId, Matrix(matrix), loop, firstFrame, effect)
+
+    /** Кадр символа для локального времени t (кадров от начала ключа). */
+    fun symbolFrame(t: Int, count: Int): Int {
+        val n = count.coerceAtLeast(1)
+        return when (loop) {
+            LoopMode.LOOP -> ((firstFrame + t) % n + n) % n
+            LoopMode.ONCE -> (firstFrame + t).coerceIn(0, n - 1)
+            LoopMode.SINGLE -> firstFrame.coerceIn(0, n - 1)
+        }
+    }
+}
+
+/** Доступ к символам открытого проекта (для габаритов экземпляров). */
+object SymbolRegistry {
+    @Volatile var project: Project? = null
+
+    private val depth = ThreadLocal<Int>()
+
+    fun bounds(id: String): RectF {
+        val d = depth.get() ?: 0
+        if (d > 6) return RectF()
+        depth.set(d + 1)
+        try { return boundsInner(id) } finally { depth.set(d) }
+    }
+
+    private fun boundsInner(id: String): RectF {
+        val sym = project?.symbol(id) ?: return RectF(-20f, -20f, 20f, 20f)
+        var r: RectF? = null
+        for (l in sym.layers) for (k in l.keyframes.values) for (e in k.elements) {
+            if (e is InstanceElement && e.symbolId == id) continue
+            val b = runCatching { e.bounds() }.getOrNull() ?: continue
+            k.transform.matrix().mapRect(b)
+            if (r == null) r = RectF(b) else r.union(b)
+        }
+        val p = project
+        return r ?: RectF((p?.width ?: 0) / 2f - 20f, (p?.height ?: 0) / 2f - 20f, (p?.width ?: 0) / 2f + 20f, (p?.height ?: 0) / 2f + 20f)
+    }
 }

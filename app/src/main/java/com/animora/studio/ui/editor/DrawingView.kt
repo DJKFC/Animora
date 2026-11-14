@@ -506,8 +506,8 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
                 if (selDragging) { selDragging = false }
                 else if (lassoActive) {
                     lassoActive = false
-                    if (lasso.size >= 6) ctl.selectLasso(lasso.toArray())
-                    else ctl.selection = null
+                    if (lasso.size >= 6 && lassoLength() > tolDoc()) ctl.selectLasso(lasso.toArray())
+                    else ctl.selectAt(lasso[0], lasso[1], tolDoc() * 0.6f)
                     lasso.clear()
                 }
             }
@@ -533,6 +533,12 @@ class DrawingView(context: Context, private val ctl: EditorController) : View(co
         if (selDragging || keyDragging || poseDragging) { ctl.history.undo(); ctl.changed() }
         selDragging = false; keyDragging = false; poseDragging = false
         invalidate()
+    }
+
+    private fun lassoLength(): Float {
+        var len = 0f; var i = 2
+        while (i < lasso.size) { len += hypot(lasso[i] - lasso[i - 2], lasso[i + 1] - lasso[i - 1]); i += 2 }
+        return len
     }
 
     private fun snapLine() {

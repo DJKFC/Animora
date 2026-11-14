@@ -108,5 +108,20 @@ crashcheck lipsync
 tap "Воспроизвести"; sleep 4; tap "Воспроизвести"; sleep 1
 crashcheck camera_play
 adb shell input keyevent 4; sleep 4
+# символы (этап 2)
+tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
+adb shell input swipe $((W*4/10)) $((H*4/10)) $((W*6/10)) $((H*5/10)) 400; sleep 2
+tap "Лассо"; sleep 1
+adb shell input tap $((W/2)) $((H*45/100)); sleep 2; shot sym_selected
+tap "В символ"; sleep 3; shot sym_converted
+tap "✎ Изменить символ"; sleep 3
+adb shell input swipe $((W*4/10)) $((H*5/10)) $((W*6/10)) $((H*4/10)) 400; sleep 2; shot sym_inside
+tap "← Назад"; sleep 3
+tap "Библиотека (1)"; sleep 2; shot library
+tap "На холст"; sleep 2; tap "Свойства…"; sleep 2; shot instance_props; tap "Готово"; sleep 1
+tap "Воспроизвести"; sleep 3; tap "Воспроизвести"; sleep 1
+crashcheck symbols
+adb shell input keyevent 4; sleep 4
+crashcheck symbols_back
 adb logcat -d > out/logcat.txt
 exit 0

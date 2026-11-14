@@ -5,6 +5,8 @@ import android.graphics.BitmapShader
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PorterDuff
@@ -16,6 +18,7 @@ import com.animora.studio.model.BrushKind
 import com.animora.studio.model.BrushRegistry
 import com.animora.studio.model.CurveProp
 import com.animora.studio.model.Keyframe
+import com.animora.studio.model.InstanceElement
 import com.animora.studio.model.CustomBrush
 import com.animora.studio.model.Element
 import com.animora.studio.model.Layer
@@ -45,7 +48,9 @@ class FrameOptions(
     val onlyLayerId: String? = null
 )
 
-class Resolved(val elements: List<Element>, val matrix: Matrix, val alpha: Float)
+private val SYMBOL_OPT = FrameOptions(background = false, includeGuides = false)
+
+class Resolved(val elements: List<Element>, val matrix: Matrix, val alpha: Float, val keyStart: Int = 0)
 
 /** Рендерер кадра. Экземпляр не потокобезопасен — у каждого потока свой. */
 class Renderer {
@@ -123,7 +128,8 @@ class Renderer {
             }
         }
 
-        fun resolve(project: Project, layer: Layer, frame: Int): Resolved? {
+        /** scope != null — слой внутри символа: кости ищутся среди слоёв символа, камера не действует. */
+        fun resolve(project: Project, layer: Layer, frame: Int, scope: List<Layer>? = null): Resolved? {
             val e = layer.keyframes.floorEntry(frame) ?: return null
             val k = e.value
             val next = layer.keyframes.higherEntry(e.key)
@@ -135,9 +141,9 @@ class Renderer {
                 if (k.tween == TweenType.SHAPE) elements = Interp.morphElements(k.elements, next.value.elements, k.ease(CurveProp.SHAPE, raw))
             }
             val m = tr.matrix()
-            Bones.bindMatrix(project, layer, frame)?.let { m.postConcat(it) }
-            cameraMatrix(project, frame, layer.depth)?.let { m.postConcat(it) }
-            return Resolved(elements, m, tr.alpha)
+            Bones.bindMatrix(project, layer, frame, scope)?.let { m.postConcat(it) }
+            if (scope == null) cameraMatrix(project, frame, layer.depth)?.let { m.postConcat(it) }
+            return Resolved(elements, m, tr.alpha, e.key)
         }
     }
 
@@ -155,28 +161,65 @@ class Renderer {
         }
     }
 
+    private var proj: Project? = null
+    private var localT = 0
+    private var symDepth = 0
+
     fun drawFrame(c: Canvas, p: Project, frame: Int, opt: FrameOptions) {
+        proj = p
         if (opt.background) drawBackground(c, p)
-        for (layer in p.layers) {
+        drawLayerList(c, p, p.layers, frame, opt, null)
+    }
+
+    /** Отрисовка набора слоёв (сцены или символа). */
+    private fun drawLayerList(c: Canvas, p: Project, layers: List<Layer>, frame: Int, opt: FrameOptions, scope: List<Layer>?) {
+        for (layer in layers) {
             if (layer.type != LayerType.DRAWING || !layer.visible) continue
             if (opt.onlyLayerId != null && layer.id != opt.onlyLayerId) continue
             if (layer.guide && !opt.includeGuides) continue
             if (layer.isMask) {
                 // маска не выводится; в редакторе — лёгкая голубая подсказка формы
-                if (opt.maskPreview) drawLayer(c, p, layer, frame, 0.25f, 0xFF4FC3F7.toInt())
+                if (opt.maskPreview) drawLayer(c, p, layer, frame, 0.25f, 0xFF4FC3F7.toInt(), scope = scope)
                 continue
             }
             if (opt.onion && (opt.onionAllLayers || layer.id == opt.activeLayerId)) drawOnion(c, p, layer, frame, opt)
-            val mask = p.layer(layer.maskedBy)?.takeIf { it.isMask && it.visible && it.type == LayerType.DRAWING }
-            if (mask == null) { drawLayer(c, p, layer, frame, 1f, null); continue }
+            val mask = layers.firstOrNull { it.id == layer.maskedBy }?.takeIf { it.isMask && it.visible && it.type == LayerType.DRAWING }
+            if (mask == null) { drawLayer(c, p, layer, frame, 1f, null, scope = scope); continue }
             val s1 = c.saveLayer(null, null)
-            drawLayer(c, p, layer, frame, 1f, null)
-            maskPaint.reset(); maskPaint.xfermode = dstIn
-            val s2 = c.saveLayer(null, maskPaint)
-            drawLayer(c, p, mask, frame, 1f, null, forMask = true)
+            drawLayer(c, p, layer, frame, 1f, null, scope = scope)
+            val mp = Paint().apply { xfermode = dstIn }
+            val s2 = c.saveLayer(null, mp)
+            drawLayer(c, p, mask, frame, 1f, null, forMask = true, scope = scope)
             c.restoreToCount(s2)
             c.restoreToCount(s1)
         }
+    }
+
+    /** Экземпляр символа: кадр символа по локальному времени ключа, цветовой эффект, вложенность до 6 уровней. */
+    private fun drawInstance(c: Canvas, e: InstanceElement) {
+        val p = proj ?: return
+        val sym = p.symbol(e.symbolId) ?: return
+        if (symDepth > 6) return
+        val sf = e.symbolFrame(localT, sym.frameCount)
+        val save = if (e.effect.isDefault) c.save() else {
+            val fx = e.effect
+            val a = fx.tintAmount.coerceIn(0f, 1f); val br = fx.brightness * 255f
+            val cm = ColorMatrix(floatArrayOf(
+                1 - a, 0f, 0f, 0f, Color.red(fx.tint) * a + br,
+                0f, 1 - a, 0f, 0f, Color.green(fx.tint) * a + br,
+                0f, 0f, 1 - a, 0f, Color.blue(fx.tint) * a + br,
+                0f, 0f, 0f, 1f, 0f
+            ))
+            val fp = Paint().apply { colorFilter = ColorMatrixColorFilter(cm); alpha = (255 * fx.alpha).toInt().coerceIn(0, 255) }
+            c.saveLayer(null, fp)
+        }
+        c.concat(e.matrix)
+        symDepth++
+        val oldT = localT
+        drawLayerList(c, p, sym.layers, sf, SYMBOL_OPT, sym.layers)
+        localT = oldT
+        symDepth--
+        c.restoreToCount(save)
     }
 
     private val maskPaint = Paint()
@@ -204,9 +247,16 @@ class Renderer {
         }
     }
 
-    fun drawLayer(c: Canvas, p: Project, layer: Layer, frame: Int, alphaMul: Float, tint: Int?, forMask: Boolean = false) {
-        val r = resolve(p, layer, frame) ?: return
+    fun drawLayer(c: Canvas, p: Project, layer: Layer, frame: Int, alphaMul: Float, tint: Int?, forMask: Boolean = false, scope: List<Layer>? = null) {
+        proj = proj ?: p
+        val r = resolve(p, layer, frame, scope) ?: return
         if (r.elements.isEmpty()) return
+        val prevT = localT
+        localT = frame - r.keyStart
+        try { drawResolved(c, layer, r, alphaMul, tint, forMask) } finally { localT = prevT }
+    }
+
+    private fun drawResolved(c: Canvas, layer: Layer, r: Resolved, alphaMul: Float, tint: Int?, forMask: Boolean) {
         val alpha = if (forMask) 1f else layer.opacity * r.alpha * alphaMul
         val needsLayer = tint != null || alpha < 0.999f || (layer.blend.mode != null && !forMask) ||
             r.elements.any { it is StrokeElement && it.kind == BrushKind.ERASER }
@@ -246,6 +296,7 @@ class Renderer {
                 }
                 c.drawPath(path, paint)
             }
+            is InstanceElement -> drawInstance(c, e)
             is BitmapElement -> {
                 bmpPaint.alpha = (255 * e.alpha).toInt().coerceIn(0, 255)
                 c.drawBitmap(e.bitmap, e.matrix, bmpPaint)

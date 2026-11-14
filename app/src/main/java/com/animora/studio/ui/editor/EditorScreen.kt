@@ -102,7 +102,7 @@ import com.animora.studio.ui.VerticalSlider
 import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
-enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES, LIPSYNC }
+enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES, LIPSYNC, INSTANCE }
 
 @Composable
 fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
@@ -116,8 +116,8 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
         onDispose { owner.lifecycle.removeObserver(obs); ctl.dispose() }
     }
     LaunchedEffect(Unit) { while (true) { delay(60_000); if (ctl.dirty && !ctl.playing) ctl.saveAsync() } }
-    val exit = { ctl.stop(); ctl.saveAsync { onExit() } }
-    BackHandler { exit() }
+    val exit = { ctl.stop(); if (ctl.editStack.isNotEmpty()) ctl.exitSymbol(all = true); ctl.saveAsync { onExit() } }
+    BackHandler { if (ctl.editStack.isNotEmpty()) ctl.exitSymbol() else exit() }
 
     var dialog by remember { mutableStateOf<Dlg?>(null) }
     var showLayers by remember { mutableStateOf(UiPrefs.layersOpenByDefault) }
@@ -158,8 +158,17 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
                 }
                 if (!focus) ContextBar(
                     ctl, Modifier.align(if (UiPrefs.contextBarBottom) Alignment.BottomCenter else Alignment.TopCenter).padding(6.dp),
-                    onImportBrushes = importBrushes, onBrushDialog = { dialog = Dlg.BRUSH }
+                    onImportBrushes = importBrushes, onBrushDialog = { dialog = Dlg.BRUSH }, onInstance = { dialog = Dlg.INSTANCE }
                 )
+                if (ctl.editStack.isNotEmpty()) Surface(
+                    shape = RoundedCornerShape(16.dp), color = Pal.accent.copy(alpha = 0.9f),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+                        SmallBtn("← Назад") { ctl.exitSymbol() }
+                        Text(ctl.breadcrumbs().joinToString(" › "), fontSize = 12.sp, color = Color.White, modifier = Modifier.padding(horizontal = 6.dp))
+                    }
+                }
                 if (focus) Surface(
                     shape = RoundedCornerShape(20.dp), color = Pal.panel.copy(alpha = 0.85f),
                     modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
@@ -214,6 +223,7 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
         Dlg.UI -> UiSettingsDialog { dialog = null }
         Dlg.CURVES -> CurveEditorDialog(ctl) { dialog = null }
         Dlg.LIPSYNC -> LipSyncDialog(ctl) { dialog = null }
+        Dlg.INSTANCE -> InstanceDialog(ctl) { dialog = null }
         null -> {}
     }
 }
@@ -355,7 +365,7 @@ private fun BrushSliders(ctl: EditorController, modifier: Modifier) {
 }
 
 @Composable
-private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushes: () -> Unit, onBrushDialog: () -> Unit) {
+private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushes: () -> Unit, onBrushDialog: () -> Unit, onInstance: () -> Unit) {
     ctl.version
     Surface(modifier, shape = RoundedCornerShape(14.dp), color = Pal.panel.copy(alpha = UiPrefs.panelAlpha), shadowElevation = 6.dp) {
         Row(
@@ -399,6 +409,11 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                 }
                 Tool.LASSO -> {
                     if (ctl.selection != null) {
+                        ctl.selectedInstance()?.let { inst ->
+                            SmallBtn("✎ Изменить символ") { ctl.enterSymbol(inst.symbolId) }
+                            SmallBtn("Свойства…", onClick = onInstance)
+                            SmallBtn("Разбить") { ctl.breakApart() }
+                        } ?: SmallBtn("В символ") { ctl.convertSelectionToSymbol() }
                         IconBtn(Icons.Filled.Delete, "Удалить") { ctl.deleteSelection() }
                         IconBtn(Icons.Filled.ContentCut, "Вырезать") { ctl.copySelection(cut = true) }
                         IconBtn(Icons.Filled.ContentCopy, "Копировать") { ctl.copySelection() }
@@ -411,7 +426,7 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                         IconBtn(Icons.Filled.FlipToBack, "Вниз") { ctl.arrangeSelection(false) }
                         IconBtn(Icons.Filled.Close, "Снять выделение") { ctl.selection = null }
                     } else {
-                        Text("Обведите штрихи  ", fontSize = 12.sp, color = Pal.dim)
+                        Text("Обведите или коснитесь  ", fontSize = 12.sp, color = Pal.dim)
                         SmallBtn("Выделить всё") { ctl.selectAll() }
                         SmallBtn("Вставить") { ctl.paste() }
                     }

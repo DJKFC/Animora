@@ -65,8 +65,8 @@ object Bones {
     }
 
     /** Матрица, переносящая привязанный слой из позы покоя в текущую позу кости. */
-    fun bindMatrix(project: Project, layer: Layer, frame: Int): Matrix? {
-        val bl = project.layer(layer.bindLayer) ?: return null
+    fun bindMatrix(project: Project, layer: Layer, frame: Int, scope: List<Layer>? = null): Matrix? {
+        val bl = (if (scope != null) scope.firstOrNull { it.id == layer.bindLayer } else project.layer(layer.bindLayer)) ?: return null
         val boneId = layer.bindBone ?: return null
         val rest = bl.bones.firstOrNull { it.id == boneId } ?: return null
         val world = solve(bl.bones, poseAt(bl, frame))[boneId] ?: return null

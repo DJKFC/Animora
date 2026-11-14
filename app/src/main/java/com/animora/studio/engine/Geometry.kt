@@ -3,7 +3,10 @@ package com.animora.studio.engine
 import android.graphics.Path
 import com.animora.studio.model.BrushKind
 import com.animora.studio.model.Element
+import android.graphics.Matrix
 import com.animora.studio.model.BitmapElement
+import com.animora.studio.model.ColorEffect
+import com.animora.studio.model.InstanceElement
 import com.animora.studio.model.StrokeElement
 import com.animora.studio.model.lerp
 import kotlin.math.abs
@@ -143,6 +146,21 @@ object Interp {
         val out = ArrayList<Element>()
         a.filterIsInstance<BitmapElement>().forEach { out.add(it.withAlpha(it.alpha * (1f - tc))) }
         b.filterIsInstance<BitmapElement>().forEach { out.add(it.withAlpha(it.alpha * tc)) }
+        // экземпляры символов: одинаковые пары — плавный переход матрицы и эффекта, иначе — растворение
+        val ia = a.filterIsInstance<InstanceElement>(); val ib = b.filterIsInstance<InstanceElement>()
+        if (ia.size == ib.size && ia.indices.all { ia[it].symbolId == ib[it].symbolId }) {
+            ia.indices.forEach { i ->
+                val va = FloatArray(9); val vb = FloatArray(9); ia[i].matrix.getValues(va); ib[i].matrix.getValues(vb)
+                val m = Matrix(); m.setValues(FloatArray(9) { k -> lerp(va[k], vb[k], t) })
+                val ea = ia[i].effect; val eb = ib[i].effect
+                out.add(InstanceElement(ia[i].symbolId, m, ia[i].loop, ia[i].firstFrame, ColorEffect(
+                    lerp(ea.alpha, eb.alpha, tc), if (tc < 0.5f) ea.tint else eb.tint, lerp(ea.tintAmount, eb.tintAmount, tc), lerp(ea.brightness, eb.brightness, tc)
+                )))
+            }
+        } else {
+            ia.forEach { out.add(it.with(effect = it.effect.copy(alpha = it.effect.alpha * (1f - tc)))) }
+            ib.forEach { out.add(it.with(effect = it.effect.copy(alpha = it.effect.alpha * tc))) }
+        }
         val pairs = min(sa.size, sb.size)
         for (i in 0 until pairs) out.add(morph(sa[i], sb[i], t))
         for (i in pairs until sa.size) out.add(sa[i].withOpacity(sa[i].opacity * (1f - tc)))
