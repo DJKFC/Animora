@@ -83,7 +83,7 @@ import kotlin.math.roundToInt
 // ============================================================== общий каркас окна
 
 @Composable
-private fun BigDialog(title: String, onDismiss: () -> Unit, content: @Composable () -> Unit) {
+internal fun BigDialog(title: String, onDismiss: () -> Unit, content: @Composable () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             shape = RoundedCornerShape(18.dp), color = Pal.panel,

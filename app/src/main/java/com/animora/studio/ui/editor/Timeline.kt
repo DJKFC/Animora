@@ -81,7 +81,7 @@ private val ROW_H = 28.dp
 private val HEAD_H = 22.dp
 
 @Composable
-fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
+fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit, onGraph: () -> Unit = {}, onXSheet: () -> Unit = {}, onPresets: () -> Unit = {}) {
     ctl.version
     val p = ctl.project
     val display = ctl.displayLayers()
@@ -436,6 +436,9 @@ private fun TimelineControls(ctl: EditorController, onMore: () -> Unit, onCurves
             }
         }
         SmallBtn("〰 Кривая", onClick = onCurves)
+        SmallBtn("📈 Графики", onClick = onGraph)
+        SmallBtn("✨ Движения", onClick = onPresets)
+        SmallBtn("▦ X-лист", onClick = onXSheet)
         IconBtn(Icons.Filled.MoreHoriz, "Ещё", onClick = onMore)
     }
 }

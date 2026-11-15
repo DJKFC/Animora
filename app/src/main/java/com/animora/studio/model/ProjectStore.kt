@@ -219,6 +219,7 @@ object Serializer {
                     put("id", b.id); put("name", b.name); b.parentId?.let { put("parent", it) }
                     put("hx", b.hx.toDouble()); put("hy", b.hy.toDouble())
                     put("len", b.length.toDouble()); put("ang", b.angle.toDouble())
+                    if (b.spring > 0f) { put("spr", b.spring.toDouble()); put("damp", b.damping.toDouble()) }
                 })
             }
         })
@@ -378,7 +379,8 @@ object Serializer {
                 Bone(
                     b.getString("id"), b.getString("name"), if (b.has("parent")) b.getString("parent") else null,
                     b.getDouble("hx").toFloat(), b.getDouble("hy").toFloat(),
-                    b.getDouble("len").toFloat(), b.getDouble("ang").toFloat()
+                    b.getDouble("len").toFloat(), b.getDouble("ang").toFloat(),
+                    b.optDouble("spr", 0.0).toFloat(), b.optDouble("damp", 0.35).toFloat()
                 )
             )
         }

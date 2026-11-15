@@ -229,7 +229,11 @@ data class Bone(
     val parentId: String?,
     val hx: Float, val hy: Float,
     val length: Float,
-    val angle: Float
+    val angle: Float,
+    /** Пружина (вторичная анимация): 0 — выключена, 1 — очень мягкая, сильно отстаёт и болтается. */
+    val spring: Float = 0f,
+    /** Затухание пружины: 0 — долго качается, 1 — сразу успокаивается. */
+    val damping: Float = 0.35f
 ) {
     val tailX: Float get() = hx + length * cos(Math.toRadians(angle.toDouble())).toFloat()
     val tailY: Float get() = hy + length * sin(Math.toRadians(angle.toDouble())).toFloat()

@@ -181,5 +181,22 @@ tap "Экспорт"; sleep 2; tap "Текущий кадр SVG (вектор)";
 crashcheck stage5
 adb shell input keyevent 4; sleep 5
 crashcheck stage5_back
+# этап 6: готовые движения, графики, экспозиционный лист
+tap "Новый проект"; sleep 4; tap "Создать"; sleep 10
+adb shell input swipe $((W*4/10)) $((H*4/10)) $((W*6/10)) $((H*5/10)) 400; sleep 1
+tap "Ещё"; sleep 2; tap "Готовые движения…"; sleep 3; tap "Желе"; sleep 1; tap "Прыжок"; sleep 2; shot presets; tap "Применить"; sleep 2
+tap "Воспроизвести"; sleep 3; tap "Воспроизвести"; sleep 1
+crashcheck presets
+tap "Ещё"; sleep 2; tap "Редактор графиков…"; sleep 3
+adb shell input swipe $((W*3/10)) $((H*5/10)) $((W*3/10)) $((H*4/10)) 500; sleep 1
+adb shell input tap $((W*6/10)) $((H*5/10)); sleep 1; tap "Весь"; sleep 1; shot graph; tap "Закрыть"; sleep 2
+crashcheck graph
+tap "Ещё"; sleep 2; tap "Экспозиционный лист…"; sleep 3; tap "По 2"; sleep 2; tap "Длиннее +1"; sleep 1; shot xsheet
+adb shell input swipe $((W/2)) $((H*7/10)) $((W/2)) $((H*3/10)) 300; sleep 1; tap "Закрыть"; sleep 2
+crashcheck xsheet
+tap "Ещё"; sleep 2; tap "Lip-sync по звуку…"; sleep 3; tap "Формы — кадры символа"; sleep 1; shot lipsync_phon; tap "Отмена"; sleep 2
+crashcheck lipsync_phon
+adb shell input keyevent 4; sleep 5
+crashcheck stage6_back
 adb logcat -d > out/logcat.txt
 exit 0

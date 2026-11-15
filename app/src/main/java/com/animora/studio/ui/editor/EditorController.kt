@@ -28,6 +28,10 @@ import com.animora.studio.engine.FrameOptions
 import com.animora.studio.engine.History
 import com.animora.studio.engine.Interp
 import com.animora.studio.engine.KritaImporter
+import com.animora.studio.engine.MotionPreset
+import com.animora.studio.engine.Phonemes
+import com.animora.studio.engine.PresetKey
+import com.animora.studio.engine.Viseme
 import com.animora.studio.engine.Renderer
 import com.animora.studio.engine.distToSegment
 import com.animora.studio.engine.normalizeDeg
@@ -82,6 +86,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlin.math.min
 import kotlin.math.sin
 
@@ -764,6 +769,244 @@ class EditorController(
         }
     }
 
+    // ---------------- lip-sync по фонемам ----------------
+    private val visemeCache = HashMap<String, Array<Viseme>>()
+
+    /** Фонемы звукового клипа по кадрам (кэшируются; null — ещё не посчитаны). */
+    fun cachedVisemes(clip: AudioClip): Array<Viseme>? = visemeCache[visemeKey(clip)]
+    private fun visemeKey(c: AudioClip) = "${c.id}:${c.offsetMs}:${project.fps}"
+
+    suspend fun visemes(clip: AudioClip, sensitivity: Float = 1f): Array<Viseme>? = withContext(Dispatchers.Default) {
+        val key = visemeKey(clip) + if (sensitivity != 1f) ":$sensitivity" else ""
+        visemeCache[key] ?: run {
+            val pcm = AudioCache.pcm(audioDir, clip) ?: return@withContext null
+            val off = (clip.offsetMs * pcm.rate / 1000).toInt()
+            Phonemes.analyze(pcm.samples, pcm.rate, off, clip.frames(project.fps), project.fps, sensitivity).also { visemeCache[key] = it }
+        }
+    }
+
+    /** Посчитать фонемы для показа в экспозиционном листе. */
+    fun requestVisemes(clip: AudioClip) {
+        if (cachedVisemes(clip) != null) return
+        scope.launch { visemes(clip); changed() }
+    }
+
+    /**
+     * Lip-sync по звукам речи. assigned — для каждой формы рта номер кадра (0-based):
+     * в режиме символа — кадр внутри символа рта, иначе — ключевой кадр слоя с формами.
+     */
+    fun lipSyncPhonemes(audioLayerId: String, srcLayerId: String?, assigned: Map<Viseme, Int>, targetLayerId: String, sensitivity: Float, symbolMode: Boolean) {
+        val clip = project.layer(audioLayerId)?.audio
+        val target = project.layer(targetLayerId)
+        val src = srcLayerId?.let { project.layer(it) }
+        if (clip == null || target == null) { toast("Выберите звук и целевой слой"); return }
+        if (assigned.isEmpty()) { toast("Укажите хотя бы одну форму рта"); return }
+        val start = clip.startFrame
+        val proto: InstanceElement? = if (symbolMode) {
+            target.keyframes.floorEntry(start)?.value?.elements?.filterIsInstance<InstanceElement>()?.firstOrNull()
+                ?: target.keyframes.ceilingEntry(start)?.value?.elements?.filterIsInstance<InstanceElement>()?.firstOrNull()
+                ?: run { toast("На целевом слое нет символа рта: поставьте его из библиотеки"); return }
+        } else null
+        if (!symbolMode && (src == null || src.id == target.id)) { toast("Выберите слой с формами рта (не совпадающий с целевым)"); return }
+        busy = "Распознаю звуки речи…"
+        scope.launch {
+            val vis = visemes(clip, sensitivity)
+            busy = null
+            if (vis == null || vis.isEmpty()) { toast("Не удалось прочитать звук"); return@launch }
+            checkpoint()
+            val end = start + vis.size
+            if (end + 1 > project.frameCount) { project.frameCount = (end + 1).coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1 }
+            val baseKey = target.keyframes.floorEntry(start)?.value
+            target.keyframes.keys.filter { it in start..end }.forEach { target.keyframes.remove(it) }
+            var last = -1; var keys = 0
+            fun place(f: Int, shape: Int) {
+                val k = if (proto != null) {
+                    val els = (baseKey?.elements ?: mutableListOf()).map { e -> if (e is InstanceElement && e.symbolId == proto.symbolId) e.with(loop = LoopMode.SINGLE, firstFrame = shape) else e }.toMutableList()
+                    if (els.none { it is InstanceElement && it.symbolId == proto.symbolId }) els.add(proto.with(loop = LoopMode.SINGLE, firstFrame = shape))
+                    Keyframe(els, transform = baseKey?.transform ?: Transform())
+                } else src!!.keyframes.floorEntry(shape)?.value?.copy() ?: return
+                k.tween = TweenType.NONE
+                target.keyframes[f] = k; keys++
+            }
+            for (i in vis.indices) {
+                val shape = Phonemes.resolve(vis[i], assigned) ?: continue
+                if (shape != last) { place(start + i, shape); last = shape }
+            }
+            Phonemes.resolve(Viseme.REST, assigned)?.let { place(end, it) }
+            changed()
+            val counts = vis.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(3).joinToString { it.key.title }
+            toast("Lip-sync: $keys ключей на «${target.name}» (чаще всего: $counts)")
+        }
+    }
+
+    // ---------------- готовые движения ----------------
+    /** Применить готовое движение к активному слою с текущего кадра. */
+    fun applyMotionPreset(p: MotionPreset, duration: Int, strength: Float, loops: Int) {
+        val l = editableLayer() ?: return
+        if (l.keyframes.floorEntry(frame) == null) { toast("На слое нет рисунка в этом кадре"); return }
+        val dur = duration.coerceAtLeast(2)
+        val total = dur * loops.coerceAtLeast(1)
+        checkpoint()
+        val k0 = keyForTransform(l) ?: return
+        ensurePivot(l, k0)
+        val base = k0.transform
+        val r = if (k0.elements.isNotEmpty()) RectF(k0.elements[0].bounds()).also { rr -> k0.elements.drop(1).forEach { rr.union(it.bounds()) } } else RectF(0f, 0f, 100f, 100f)
+        val u = max(30f, max(r.width() * base.sx, r.height() * base.sy))
+        val keys = MotionPreset.build(p, strength, loops)
+        val f0 = frame
+        val end = f0 + total
+        if (end + 1 > project.frameCount) { project.frameCount = (end + 1).coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1 }
+        fun tr(pk: PresetKey): Transform {
+            // «стоит на земле»: при сжатии низ объекта не отрывается от пола
+            val ground = if (p.ground) (1f - pk.sy) * (r.bottom - base.py) * base.sy else 0f
+            return base.copy(
+                tx = base.tx + pk.dx * u + pk.dxW * project.width, ty = base.ty + pk.dy * u + ground,
+                rot = base.rot + pk.rot, sx = base.sx * pk.sx, sy = base.sy * pk.sy, alpha = (base.alpha * pk.alpha).coerceIn(0f, 1f)
+            )
+        }
+        // ключи, которые уже были внутри — подстраиваем под движение, чтобы не было рывков
+        l.keyframes.keys.filter { it in (f0 + 1)..end }.forEach { f ->
+            val pk = MotionPreset.eval(keys, (f - f0).toFloat() / total)
+            l.keyframes[f]!!.transform = tr(pk)
+        }
+        val placed = HashSet<Int>()
+        for (pk in keys) {
+            val f = f0 + (pk.t * total).roundToInt()
+            if (!placed.add(f)) continue
+            val k = l.keyframes[f] ?: l.keyframes.floorEntry(f)!!.value.copy().also { l.keyframes[f] = it }
+            k.transform = tr(pk)
+            k.tween = if (pk.hold) TweenType.NONE else TweenType.MOTION
+            k.easing = pk.easing; k.curve = null; k.separateCurves = false; k.guide = null
+        }
+        // между добавленными и старыми ключами тоже должен идти твин
+        l.keyframes.subMap(f0, true, end, false).values.forEach { k -> if (k.tween == TweenType.SHAPE) return@forEach; if (keys.none { it.hold }) k.tween = TweenType.MOTION }
+        l.keyframes[end]?.tween = TweenType.NONE
+        changed(); toast("«${p.title}»: кадры ${f0 + 1}–${end + 1}")
+    }
+
+    // ---------------- пружины костей ----------------
+    fun setBoneSpring(id: String, spring: Float, damping: Float) {
+        val l = activeBoneLayer() ?: return
+        val i = l.bones.indexOfFirst { it.id == id }; if (i < 0) return
+        checkpointOnce("spring$id")
+        l.bones[i] = l.bones[i].copy(spring = spring.coerceIn(0f, 1f), damping = damping.coerceIn(0f, 1f))
+        changed()
+    }
+
+    /** Пружина на всю цепочку от выбранной кости до кончиков. */
+    fun setChainSpring(id: String, spring: Float, damping: Float) {
+        val l = activeBoneLayer() ?: return
+        checkpoint()
+        val ids = HashSet<String>(); ids.add(id)
+        var grew = true
+        while (grew) { grew = false; l.bones.forEach { if (it.parentId in ids && ids.add(it.id)) grew = true } }
+        for (i in l.bones.indices) if (l.bones[i].id in ids) l.bones[i] = l.bones[i].copy(spring = spring, damping = damping)
+        changed(); toast("Пружина: ${ids.size} костей")
+    }
+
+    fun selectedBone(): Bone? = activeBoneLayer()?.bones?.firstOrNull { it.id == selectedBoneId }
+
+    // ---------------- экспозиционный лист ----------------
+    /** Номер рисунка ключа в слое (1, 2, 3…; пустые ключи не считаются). */
+    fun drawingNumbers(l: Layer): Map<Int, Int> {
+        val out = HashMap<Int, Int>(); var n = 0
+        // копии ключа делят одни и те же элементы — у них один номер рисунка
+        val seen = HashMap<List<Element>, Int>()
+        for ((f, k) in l.keyframes) if (k.elements.isNotEmpty()) out[f] = seen.getOrPut(k.elements.toList()) { ++n }
+        return out
+    }
+
+    /** Экспозиция «по N»: каждый рисунок слоя держится N кадров (по единицам, двойкам, тройкам). */
+    fun setExposure(layerId: String, n: Int, fromFrame: Int = 0) {
+        val l = project.layer(layerId) ?: return
+        if (l.type != LayerType.DRAWING) { toast("Только для слоя рисования"); return }
+        val keys = l.keyframes.tailMap(fromFrame, true).entries.map { it.key to it.value }
+        if (keys.isEmpty()) return
+        checkpoint()
+        keys.forEach { l.keyframes.remove(it.first) }
+        val f0 = keys.first().first
+        keys.forEachIndexed { i, (_, k) -> l.keyframes[f0 + i * n] = k }
+        val end = f0 + keys.size * n
+        if (end > project.frameCount) { project.frameCount = end.coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1 }
+        changed(); toast("«${l.name}»: каждый рисунок по $n кадр${if (n in 2..4) "а" else if (n == 1) "у" else "ов"}")
+    }
+
+    /** Удлинить (+1) или укоротить (−1) экспозицию рисунка, который виден в кадре f. */
+    fun changeHold(layerId: String, f: Int, delta: Int) {
+        val l = project.layer(layerId) ?: return
+        val key = l.keyframes.floorKey(f) ?: return
+        val next = l.keyframes.higherKey(key)
+        if (delta < 0 && (next ?: project.frameCount) - key <= 1) { toast("Короче одного кадра нельзя"); return }
+        checkpoint()
+        val moved = l.keyframes.tailMap(key, false).entries.map { it.key to it.value }
+        moved.forEach { l.keyframes.remove(it.first) }
+        moved.forEach { l.keyframes[it.first + delta] = it.second }
+        if (delta > 0 && (l.keyframes.lastKey() + 1) > project.frameCount) { project.frameCount = (l.keyframes.lastKey() + 1).coerceAtMost(MAX_FRAMES); rangeTo = project.frameCount - 1 }
+        changed()
+    }
+
+    fun setKeyLabel(layerId: String, f: Int, text: String) {
+        val l = project.layer(layerId) ?: return
+        val k = l.keyframes[f] ?: run {
+            if (text.isBlank()) return
+            checkpoint()
+            val held = l.keyframes.floorEntry(f)?.value
+            val nk = if (held != null) held.copy().also { it.transform = Renderer.keyTransformAt(l, f) ?: held.transform } else Keyframe()
+            l.keyframes[f] = nk
+            nk
+        }
+        checkpointOnce("label$layerId$f")
+        k.label = text.trim(); changed()
+    }
+
+    // ---------------- редактор графиков ----------------
+    enum class GraphProp(val title: String, val color: Int) {
+        X("Позиция X", 0xFFFF6B6B.toInt()), Y("Позиция Y", 0xFF4FC3F7.toInt()), ROT("Поворот", 0xFFFFD54F.toInt()),
+        SX("Масштаб X", 0xFFAED581.toInt()), SY("Масштаб Y", 0xFF4DB6AC.toInt()), ALPHA("Прозрачность", 0xFFBA68C8.toInt());
+
+        fun of(t: Transform): Float = when (this) { X -> t.tx; Y -> t.ty; ROT -> t.rot; SX -> t.sx; SY -> t.sy; ALPHA -> t.alpha }
+        fun with(t: Transform, v: Float): Transform = when (this) {
+            X -> t.copy(tx = v); Y -> t.copy(ty = v); ROT -> t.copy(rot = v)
+            SX -> t.copy(sx = v); SY -> t.copy(sy = v); ALPHA -> t.copy(alpha = v.coerceIn(0f, 1f))
+        }
+    }
+
+    /** Слой для графиков: активный слой рисования или камера. */
+    fun graphLayer(): Layer? = activeLayer?.takeIf { it.type == LayerType.DRAWING || it.type == LayerType.CAMERA }
+
+    fun setKeyValue(layerId: String, f: Int, prop: GraphProp, v: Float) {
+        val l = project.layer(layerId) ?: return
+        val k = l.keyframes[f] ?: return
+        checkpointOnce("graph$layerId$f${prop.name}")
+        k.transform = prop.with(k.transform, v)
+        changed()
+    }
+
+    /** Перенести ключ во времени (если место свободно). */
+    fun moveKey(layerId: String, from: Int, to: Int): Boolean {
+        val l = project.layer(layerId) ?: return false
+        val t = to.coerceIn(0, project.frameCount - 1)
+        if (t == from || l.keyframes.containsKey(t)) return false
+        val k = l.keyframes[from] ?: return false
+        // нельзя перепрыгивать соседние ключи — порядок сохраняется
+        val lo = l.keyframes.lowerKey(from) ?: -1; val hi = l.keyframes.higherKey(from) ?: Int.MAX_VALUE
+        if (t <= lo || t >= hi) return false
+        checkpointOnce("gmove$layerId$from")
+        l.keyframes.remove(from); l.keyframes[t] = k
+        changed(); return true
+    }
+
+    fun setSegmentEasing(layerId: String, f: Int, e: Easing) {
+        val l = project.layer(layerId) ?: return
+        val key = l.keyframes.floorKey(f) ?: return
+        val k = l.keyframes[key]!!
+        if (l.keyframes.higherKey(key) == null) { toast("После этого ключа нет следующего"); return }
+        checkpoint()
+        if (k.tween == TweenType.NONE) k.tween = TweenType.MOTION
+        k.easing = e; k.curve = null; k.separateCurves = false
+        changed()
+    }
+
     // ---------------- камера ----------------
     fun cameraLayer(): Layer? = Renderer.cameraLayer(project)
     fun cameraMatrix(): Matrix? = Renderer.cameraMatrix(project, frame, 0f)
@@ -1305,7 +1548,8 @@ class EditorController(
     // ---------------- кости ----------------
     fun activeBoneLayer(): Layer? = activeLayer?.takeIf { it.type == LayerType.BONES }
 
-    fun posedBones(l: Layer) = Bones.solve(l.bones, Bones.poseAt(l, frame))
+    /** Кости для показа: во время позирования — ключевая поза, иначе — с пружинами. */
+    fun posedBones(l: Layer) = Bones.solve(l.bones, if (poseBoneId != null) Bones.poseAt(l, frame) else Bones.displayPose(l, frame, project.fps))
 
     fun addBone(x0: Float, y0: Float, x1: Float, y1: Float, snapTol: Float) {
         val l = activeBoneLayer() ?: run { toast("Выберите или создайте слой костей"); return }

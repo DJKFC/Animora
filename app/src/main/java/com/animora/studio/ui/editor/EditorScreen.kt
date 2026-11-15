@@ -124,7 +124,7 @@ import com.animora.studio.ui.VerticalSlider
 import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
-enum class Dlg { COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES, LIPSYNC, INSTANCE, TEXT, ALIGN, SCENES, IMPORT }
+enum class Dlg { PRESETS, XSHEET, GRAPH, COLOR, BRUSH, ONION, PROJECT, EXPORT, FRAME_MENU, PLAYBACK, UI, CURVES, LIPSYNC, INSTANCE, TEXT, ALIGN, SCENES, IMPORT }
 
 @Composable
 fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
@@ -150,7 +150,10 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
     val brushPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> ctl.importBrushes(uris) }
     val importBrushes = { brushPicker.launch(arrayOf("*/*")) }
 
-    val timeline: @Composable () -> Unit = { Timeline(ctl, onMore = { dialog = Dlg.FRAME_MENU }, onCurves = { dialog = Dlg.CURVES }) }
+    val timeline: @Composable () -> Unit = {
+        Timeline(ctl, onMore = { dialog = Dlg.FRAME_MENU }, onCurves = { dialog = Dlg.CURVES },
+            onGraph = { dialog = Dlg.GRAPH }, onXSheet = { dialog = Dlg.XSHEET }, onPresets = { dialog = Dlg.PRESETS })
+    }
     val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { ctl.importAudio(it) } }
     val svgPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { ctl.importSvg(it) } }
     val psdPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { ctl.importPsd(it) } }
@@ -332,6 +335,9 @@ fun EditorScreen(project: Project, store: ProjectStore, onExit: () -> Unit) {
         Dlg.LIPSYNC -> LipSyncDialog(ctl) { dialog = null }
         Dlg.INSTANCE -> InstanceDialog(ctl) { dialog = null }
         Dlg.TEXT -> {}
+        Dlg.PRESETS -> MotionPresetsDialog(ctl) { dialog = null }
+        Dlg.XSHEET -> XSheetDialog(ctl) { dialog = null }
+        Dlg.GRAPH -> GraphEditorDialog(ctl, onCurves = { dialog = Dlg.CURVES }) { dialog = null }
         Dlg.ALIGN -> AlignDialog(ctl) { dialog = null }
         Dlg.SCENES -> ScenesDialog(ctl) { dialog = null }
         Dlg.IMPORT -> ImportDialog(
@@ -457,6 +463,9 @@ private fun EditorTopBar(ctl: EditorController, onBack: () -> Unit, onDialog: (D
                     DropdownMenuItem(text = { Text("Сбросить вид") }, onClick = { ctl.viewResetToken++; menu = false })
                     DropdownMenuItem(text = { Text("Настроить интерфейс…") }, onClick = { menu = false; onDialog(Dlg.UI) })
                     DropdownMenuItem(text = { Text("Кривые анимации…") }, onClick = { menu = false; onDialog(Dlg.CURVES) })
+                    DropdownMenuItem(text = { Text("Редактор графиков…") }, onClick = { menu = false; onDialog(Dlg.GRAPH) })
+                    DropdownMenuItem(text = { Text("Готовые движения…") }, onClick = { menu = false; onDialog(Dlg.PRESETS) })
+                    DropdownMenuItem(text = { Text("Экспозиционный лист…") }, onClick = { menu = false; onDialog(Dlg.XSHEET) })
                     DropdownMenuItem(text = { Text("Lip-sync по звуку…") }, onClick = { menu = false; onDialog(Dlg.LIPSYNC) })
                     DropdownMenuItem(text = { Text("Импорт (SVG, PSD, видео, звук…)") }, onClick = { menu = false; onDialog(Dlg.IMPORT) })
                     DropdownMenuItem(text = { Text("Сцены (${ctl.sceneNames().size})…") }, onClick = { menu = false; onDialog(Dlg.SCENES) })
@@ -654,12 +663,14 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
                     Text("Тяните — новая кость; от конца кости — дочерняя  ", fontSize = 12.sp, color = Pal.dim)
                     if (ctl.selectedBoneId != null) SmallBtn("Удалить кость") { ctl.deleteSelectedBone() }
                     SmallBtn("К позированию") { ctl.tool = Tool.POSE }
+                    BoneSpringControls(ctl)
                 }
                 Tool.POSE -> {
                     SmallBtn("IK (тянуть цепочку)", selected = ctl.ikMode) { ctl.ikMode = !ctl.ikMode }
                     SmallBtn("+ Ключ позы") { ctl.insertPoseKey() }
                     SmallBtn("Сброс позы") { ctl.resetPose() }
                     Text("  Корень тяните за жёлтую точку", fontSize = 12.sp, color = Pal.dim)
+                    BoneSpringControls(ctl)
                 }
                 Tool.EYEDROPPER -> Text("Коснитесь цвета на холсте (кнопка 2 стилуса — тоже пипетка)", fontSize = 12.sp, color = Pal.dim)
                 Tool.HAND -> Text("Сдвиг одним пальцем · масштаб и поворот двумя", fontSize = 12.sp, color = Pal.dim)
@@ -697,6 +708,24 @@ private fun ContextBar(ctl: EditorController, modifier: Modifier, onImportBrushe
             }
         }
       }
+    }
+}
+
+/** Пружина выбранной кости: волосы, хвост, уши сами покачиваются за движением. */
+@Composable
+private fun BoneSpringControls(ctl: EditorController) {
+    ctl.version
+    val b = ctl.selectedBone() ?: return
+    Spacer(Modifier.width(8.dp))
+    SmallBtn(if (b.spring > 0f) "〜 Пружина вкл." else "〜 Пружина", selected = b.spring > 0f) {
+        ctl.setBoneSpring(b.id, if (b.spring > 0f) 0f else 0.5f, b.damping)
+    }
+    if (b.spring > 0f) {
+        Text("Мягкость ${(b.spring * 100).toInt()}%", fontSize = 12.sp, color = Pal.dim)
+        Slider(b.spring, { ctl.setBoneSpring(b.id, it.coerceAtLeast(0.01f), b.damping) }, valueRange = 0.01f..1f, modifier = Modifier.width(100.dp))
+        Text("Затухание ${(b.damping * 100).toInt()}%", fontSize = 12.sp, color = Pal.dim)
+        Slider(b.damping, { ctl.setBoneSpring(b.id, b.spring, it) }, modifier = Modifier.width(100.dp))
+        SmallBtn("На всю цепочку") { ctl.setChainSpring(b.id, b.spring, b.damping) }
     }
 }
 
