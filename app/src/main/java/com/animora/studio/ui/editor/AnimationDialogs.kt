@@ -498,4 +498,3 @@ fun GraphEditorDialog(ctl: EditorController, onCurves: () -> Unit, onDismiss: ()
     }
 }
 
-private fun Modifier.clip(RoundedCornerShape(8.dp)) = this.then(Modifier.background(Color.Transparent, RoundedCornerShape(8.dp)))
