@@ -118,7 +118,7 @@ fun Timeline(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit, on
     }
 
     Column(Modifier.fillMaxWidth().background(Pal.panel)) {
-        TimelineControls(ctl, onMore, onCurves)
+        TimelineControls(ctl, onMore, onCurves, onGraph, onXSheet, onPresets)
         val visibleRows = min(max(rows, 1), UiPrefs.timelineRows)
         Row(Modifier.fillMaxWidth().height(HEAD_H + ROW_H * visibleRows)) {
             Column(Modifier.width(118.dp).fillMaxHeight()) {
@@ -371,7 +371,7 @@ private fun TimelineGrid(ctl: EditorController, cellPx: Float, sx: () -> Float, 
 }
 
 @Composable
-private fun TimelineControls(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit) {
+private fun TimelineControls(ctl: EditorController, onMore: () -> Unit, onCurves: () -> Unit, onGraph: () -> Unit, onXSheet: () -> Unit, onPresets: () -> Unit) {
     ctl.version
     var easeMenu by remember { mutableStateOf(false) }
     val layer = ctl.activeLayer
